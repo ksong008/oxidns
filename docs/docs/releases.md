@@ -10,7 +10,31 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-05
 
 <div className="release-stack">
-  <ReleaseCard version="v1.0.0" badge="Major Release" date="2026-05-19" defaultOpen>
+   <ReleaseCard version="v1.0.1" badge="Patch Release" date="2026-05-20" defaultOpen>
+       **版本定位**
+
+       - Patch Release，修复 `v1.0.0` 中的 DNS 响应合规性问题、客户端 IP 规范化缺陷和 WebUI 使用问题，同时新增服务管理能力、安装器脚本和查询审计交互改进。
+
+       **主要变更**
+
+       - 修复 `redirect` 插件合成 DNS 响应中 CNAME 未置于 answer section 首位的问题，确保与 RFC 规范对齐。
+       - 修复双栈 socket 接收 IPv4-mapped IPv6 地址（`::ffff:x.x.x.x`）时，`DnsContext` 未将其规范化为真实 IPv4 地址，导致 `client_ip` 匹配器等依赖 IP 的逻辑错判。
+       - 修复 WebUI 刷新页面出现 404 的问题，并在首次加载时自动连接 `/api` 后缀以适配全量后端托管场景。
+       - 修复 WebUI `autoPort` 配置项缺失，现在支持通过 `config.yaml` 的 `webui.autoPort` 自动分配端口。
+       - 新增 `service restart` 命令，支持以系统服务方式运行时通过 CLI 重启 OxiDNS。
+       - 新增 Linux / macOS / Windows 托管服务安装器脚本（`install.sh` / `install.ps1`），实现一条命令安装、注册并启动系统服务。
+       - `query_recorder` 面板新增按 matcher 行点击过滤查询记录的能力，补充延迟着色视觉提示和 record-count 列名信息浮层。
+       - WebUI 插件详情面板、缓存管理对话框和配置字段编辑器整体打磨：替换原生 `confirm` 为 shadcn AlertDialog、采用响应式双列布局、居中约束 max-w-6xl 内容区域。
+
+       **配置与升级说明**
+
+       - 根 crate 版本号升级为 `1.0.1`；release tag 应使用 `v1.0.1`。
+       - `v1.0.0` 配置可直接升级到 `v1.0.1`，未引入新的必填配置字段。
+       - 使用双栈 socket 且依赖 `client_ip` 匹配器、ECS 或 IP 相关策略的部署，升级后客户端 IP 将正确规范化为 IPv4。
+       - 安装脚本默认将应用注册为系统服务；仅需便携安装时设置 `OXIDNS_INSTALL_SERVICE=0`。
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.0.0" badge="Major Release" date="2026-05-19">
       **版本定位**
 
       - Major Release，标志 OxiDNS 从实验性插件化 DNS 引擎进入 1.0 稳定阶段。`v1.0.0` 正式内置 WebUI 管理控制台，并包含 `v0.5.2` 以来的管理 API、插件运行时、观测能力、发布打包和性能稳定性改进。
@@ -49,9 +73,9 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
       - 管理 API 入口已收敛为带前缀的路由；如果外层反向代理、ACL 或脚本直接调用旧 API 路径，需要按新版 API 文档确认路径。
       - 使用自动升级、Docker 或 Debian 包部署时，建议同时确认控制台静态资源目录和服务文件已随新包安装。
       - 依赖插件 reload、配置在线编辑或运行时 API 的部署，建议先在测试环境验证权限、CORS、认证和回滚流程。
-  </ReleaseCard>
+   </ReleaseCard>
 
-  <ReleaseCard version="v0.5.2" badge="Patch Release" date="2026-05-04">
+   <ReleaseCard version="v0.5.2" badge="Patch Release" date="2026-05-04">
       **版本定位**
 
       - Patch Release，重点修复 DoH / DoH3 上游长连接复用和 upstream duration 配置解析问题。

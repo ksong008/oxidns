@@ -10,7 +10,31 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-05
 
 <div className="release-stack">
-  <ReleaseCard version="v1.0.0" badge="Major Release" date="2026-05-19" defaultOpen>
+   <ReleaseCard version="v1.0.1" badge="Patch Release" date="2026-05-20" defaultOpen>
+       **Release Scope**
+
+       - Patch Release fixing DNS response compliance issues, client-IP canonicalization, and WebUI usability problems from `v1.0.0`, while adding service management capabilities, installer scripts, and query-auditing UX improvements.
+
+       **Changes**
+
+       - Fixed `redirect` plugin placing synthetic CNAME records after other answers instead of first, aligning with RFC expectations.
+       - Fixed dual-stack sockets passing IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`) into `DnsContext` without canonicalization, causing `client_ip` matchers and other IP-dependent logic to misidentify them as IPv6.
+       - Fixed WebUI returning 404 on page refresh and added auto-connect to `/api` on first load for full-backend-hosting deployments.
+       - Fixed missing WebUI `autoPort` config field; `webui.autoPort` in `config.yaml` now supports automatic port assignment.
+       - Added `service restart` CLI command for restarting OxiDNS when running as a system service.
+       - Added Linux / macOS / Windows hosted-service installer scripts (`install.sh` / `install.ps1`) for one-command install, registration, and service startup.
+       - `query_recorder` panel gained click-to-filter by matcher row, color-coded latency badges, and Info tooltips on record-count column headers.
+       - WebUI plugin detail sheets, cache dialogs, and config field editor polished: replaced native `confirm` with shadcn AlertDialog, adopted responsive two-column grid layout, and constrained content to `max-w-6xl` centered layout.
+
+       **Compatibility and Upgrade Notes**
+
+       - Root crate version bumped to `1.0.1`; release tag should use `v1.0.1`.
+       - `v1.0.0` configs upgrade directly to `v1.0.1` with no new required fields.
+       - Deployments using dual-stack sockets with `client_ip` matchers, ECS, or IP-dependent policies will see client IPs correctly canonicalized to IPv4 after upgrading.
+       - Installer scripts register the app as a system service by default; set `OXIDNS_INSTALL_SERVICE=0` for portable-only installation.
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.0.0" badge="Major Release" date="2026-05-19">
       **Release Scope**
 
       - Major Release marking OxiDNS's move from an experimental plugin-driven DNS engine to the 1.0 stable line. `v1.0.0` officially includes the built-in WebUI management console and management API, plugin runtime, observability, packaging, and stability work since `v0.5.2`.
@@ -49,9 +73,9 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
       - The management API now uses a prefixed route layout. If reverse proxies, ACLs, or automation scripts call old API paths directly, confirm them against the updated API docs.
       - For automatic upgrade, Docker, or Debian package deployments, confirm that the console static asset directory and service files are installed with the new package.
       - Deployments relying on plugin reload, online config editing, or runtime APIs should validate auth, CORS, permissions, and rollback flows in a staging environment first.
-  </ReleaseCard>
+   </ReleaseCard>
 
-  <ReleaseCard version="v0.5.2" badge="Patch Release" date="2026-05-04">
+   <ReleaseCard version="v0.5.2" badge="Patch Release" date="2026-05-04">
       **Release Scope**
 
       - Patch Release focused on DoH / DoH3 upstream long-connection reuse and upstream duration parsing.
