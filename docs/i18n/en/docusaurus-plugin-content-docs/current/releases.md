@@ -20,7 +20,6 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
        - Fixed `redirect` plugin placing synthetic CNAME records after other answers instead of first, aligning with RFC expectations.
        - Fixed dual-stack sockets passing IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`) into `DnsContext` without canonicalization, causing `client_ip` matchers and other IP-dependent logic to misidentify them as IPv6.
        - Fixed WebUI returning 404 on page refresh and added auto-connect to `/api` on first load for full-backend-hosting deployments.
-       - Fixed missing WebUI `autoPort` config field; `webui.autoPort` in `config.yaml` now supports automatic port assignment.
        - Added `service restart` CLI command for restarting OxiDNS when running as a system service.
        - Added Linux / macOS / Windows hosted-service installer scripts (`install.sh` / `install.ps1`) for one-command install, registration, and service startup.
        - `query_recorder` panel gained click-to-filter by matcher row, color-coded latency badges, and Info tooltips on record-count column headers.

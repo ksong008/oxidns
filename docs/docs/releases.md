@@ -20,7 +20,6 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
        - 修复 `redirect` 插件合成 DNS 响应中 CNAME 未置于 answer section 首位的问题，确保与 RFC 规范对齐。
        - 修复双栈 socket 接收 IPv4-mapped IPv6 地址（`::ffff:x.x.x.x`）时，`DnsContext` 未将其规范化为真实 IPv4 地址，导致 `client_ip` 匹配器等依赖 IP 的逻辑错判。
        - 修复 WebUI 刷新页面出现 404 的问题，并在首次加载时自动连接 `/api` 后缀以适配全量后端托管场景。
-       - 修复 WebUI `autoPort` 配置项缺失，现在支持通过 `config.yaml` 的 `webui.autoPort` 自动分配端口。
        - 新增 `service restart` 命令，支持以系统服务方式运行时通过 CLI 重启 OxiDNS。
        - 新增 Linux / macOS / Windows 托管服务安装器脚本（`install.sh` / `install.ps1`），实现一条命令安装、注册并启动系统服务。
        - `query_recorder` 面板新增按 matcher 行点击过滤查询记录的能力，补充延迟着色视觉提示和 record-count 列名信息浮层。
