@@ -3,7 +3,7 @@
 
 //! `prefer_ipv4` / `prefer_ipv6` quick-setup executors.
 //!
-//! This plugin follows mosdns dual-selector behavior:
+//! Behavior:
 //! - For preferred qtype (A for prefer_ipv4 / AAAA for prefer_ipv6): pass query
 //!   through and cache positive preferred-type answers.
 //! - For non-preferred qtype:

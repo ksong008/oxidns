@@ -121,11 +121,7 @@ OxiDNS is for users who want to describe DNS behavior explicitly through configu
 
 ## Relationship to Other Projects
 
-OxiDNS is inspired by mosdns and inherits the important idea of DNS policy orchestration.
-
-However, OxiDNS is not intended to be a clone of mosdns. It rebuilds the idea in Rust with a focus on performance boundaries, structural clarity, composability, and long-term maintainability.
-
-It also does not try to replace every DNS tool:
+OxiDNS does not try to replace every DNS tool:
 
 | Project | Best suited for |
 | --- | --- |
@@ -224,6 +220,16 @@ OxiDNS is under active development.
 The current version is suitable for advanced users, testing environments, and self-hosted network setups. For production use, make sure you understand the configuration, logs, and fallback behavior before deploying it.
 
 Issues, real-world feedback, documentation improvements, and plugin contributions are welcome.
+
+---
+
+## Disclaimer
+
+This project is provided as-is, without warranties of any kind.
+
+DNS infrastructure directly affects network availability, name resolution results, and access behavior. Misconfiguration can cause connectivity loss, DNS leaks, or unexpected resolution failures. Before deploying in production or critical environments, make sure you understand the configuration model, have tested fallback paths, and have monitoring in place.
+
+The maintainers are not responsible for any service disruption, data loss, or security incident resulting from the use of this software. Users are responsible for ensuring their deployment and usage comply with applicable laws, regulations, and third-party service terms.
 
 ---
 

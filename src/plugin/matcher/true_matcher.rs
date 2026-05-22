@@ -3,7 +3,7 @@
 
 //! `_true` matcher plugin.
 //!
-//! Always returns true. This mirrors mosdns sequence built-in matcher behavior.
+//! Always returns true.
 
 use std::fmt::Debug;
 

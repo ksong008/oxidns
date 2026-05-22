@@ -3,8 +3,7 @@
 
 //! `hosts` executor plugin.
 //!
-//! Maps host-style domain rules to static IP responses with mosdns-compatible
-//! matching and response semantics.
+//! Maps host-style domain rules to static IP responses.
 //!
 //! Rule sources:
 //! - inline `entries`
@@ -16,7 +15,7 @@
 //! - keyword (`keyword:cdn`)
 //! - regex (`regexp:^api\\.`)
 //!
-//! Unprefixed rules default to `full:` to mirror mosdns `hosts`.
+//! Unprefixed rules default to `full:`.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -50,8 +49,8 @@ const HOSTS_FAKE_SOA_TTL: u32 = 300;
 
 lazy_static::lazy_static! {
     static ref FAKE_SOA_RDATA: Arc<RData> = Arc::new(RData::SOA(SOA::new(
-        Name::from_ascii("fake-ns.mosdns.fake.root.").expect("fake SOA mname should parse"),
-        Name::from_ascii("fake-mbox.mosdns.fake.root.").expect("fake SOA rname should parse"),
+        Name::from_ascii("fake-ns.oxidns.fake.root.").expect("fake SOA mname should parse"),
+        Name::from_ascii("fake-mbox.oxidns.fake.root.").expect("fake SOA rname should parse"),
         2021110400,
         1800,
         900,
@@ -404,7 +403,7 @@ fn parse_rule_matcher(raw_rule: &str) -> std::result::Result<RuleMatcher, String
         return Ok(RuleMatcher::Regexp(v.to_string()));
     }
 
-    // mosdns hosts defaults to full match when prefix is omitted.
+    // unprefixed rules default to full match.
     Ok(RuleMatcher::Full(normalize_name(raw_rule)))
 }
 

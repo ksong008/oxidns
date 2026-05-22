@@ -3,8 +3,7 @@
 
 //! `debug_print` executor plugin.
 //!
-//! This plugin logs request/response objects at info level for debugging.
-//! It mirrors mosdns `debug_print` quick setup semantics in OxiDNS.
+//! Logs request/response objects at info level for debugging.
 
 use async_trait::async_trait;
 use serde::Deserialize;

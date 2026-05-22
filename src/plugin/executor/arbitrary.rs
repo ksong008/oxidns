@@ -3,14 +3,14 @@
 
 //! `arbitrary` executor plugin.
 //!
-//! This executor is intentionally aligned with mosdns `arbitrary` semantics:
+//! Behavior:
 //! - zone-style records are parsed at startup;
 //! - matching is exact on `(qname, qtype, qclass)`;
 //! - all matched questions in the request contribute answers;
 //! - the executor sets the response and, by default, keeps the chain running.
 //!
-//! OxiDNS keeps a `short_circuit` switch as an explicit extension so callers
-//! can stop the executor chain after a synthetic response when needed.
+//! `short_circuit` stops the executor chain after a synthetic response when
+//! needed.
 
 use std::sync::Arc;
 
@@ -33,7 +33,7 @@ use crate::proto::{DNSClass, Name, Rcode, Record, RecordType};
 struct ArbitraryConfig {
     /// Inline zone snippets.
     ///
-    /// Each item is parsed independently, matching mosdns `rules` semantics.
+    /// Each item is parsed independently as a zone snippet.
     #[serde(default)]
     rules: Vec<String>,
     /// Paths to zone files parsed at startup.
