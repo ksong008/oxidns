@@ -9,7 +9,7 @@
 //! - [`app_clock`]: low-overhead elapsed-time tracking for logs and metrics.
 //! - [`context`]: [`context::DnsContext`] and related state passed through the
 //!   plugin pipeline during request execution.
-//! - [`env`]: shared process environment variable access helpers.
+//! - [`mod@env`]: shared process environment variable access helpers.
 //! - [`error`]: common error types and result aliases.
 //! - [`metrics`]: shared low-overhead plugin metrics registry and renderer.
 //! - [`rule_matcher`]: reusable domain and string matching helpers.
