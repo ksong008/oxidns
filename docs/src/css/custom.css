@@ -126,7 +126,9 @@ pre code {
 }
 
 .theme-doc-markdown table {
+  display: table;
   width: 100%;
+  max-width: 100%;
   overflow: hidden;
   border-collapse: separate;
   border-spacing: 0;
@@ -135,6 +137,13 @@ pre code {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(250, 252, 251, 0.5));
   box-shadow: 0 14px 34px rgba(15, 23, 42, 0.04);
+  table-layout: auto;
+}
+
+.theme-doc-markdown table th:first-child,
+.theme-doc-markdown table td:first-child {
+  white-space: nowrap;
+  width: 1%;
 }
 
 .theme-doc-markdown table thead tr {
