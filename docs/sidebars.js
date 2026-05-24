@@ -1,15 +1,20 @@
 const sidebars = {
   docsSidebar: [
     'intro',
-    'quickstart',
-    'cli',
-    'configuration',
-    'releases',
-    'roadmap',
-    'webui',
     {
       type: 'category',
-      label: '插件参考',
+      label: '入门',
+      collapsed: false,
+      items: ['quickstart', 'scenarios'],
+    },
+    {
+      type: 'category',
+      label: '配置参考',
+      items: ['configuration', 'cli'],
+    },
+    {
+      type: 'category',
+      label: '插件',
       items: [
         'plugin-reference/overview',
         'plugin-reference/server',
@@ -18,11 +23,21 @@ const sidebars = {
         'plugin-reference/provider',
       ],
     },
-    'api',
-    'mikrotik-policy-routing',
-    'scenarios',
-    'architecture-and-design',
-    'benchmarks',
+    {
+      type: 'category',
+      label: '管理与集成',
+      items: ['webui', 'api', 'mikrotik-policy-routing'],
+    },
+    {
+      type: 'category',
+      label: '架构与性能',
+      items: ['architecture-and-design', 'benchmarks'],
+    },
+    {
+      type: 'category',
+      label: '项目',
+      items: ['roadmap', 'releases'],
+    },
   ],
 };
 

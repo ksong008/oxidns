@@ -3,8 +3,28 @@
     "message": "Next",
     "description": "The label for version current"
   },
-  "sidebar.docsSidebar.category.插件参考": {
-    "message": "Plugin Reference",
-    "description": "The label for category 'Plugin Reference' in sidebar 'docsSidebar'"
+  "sidebar.docsSidebar.category.入门": {
+    "message": "Getting Started",
+    "description": "The label for category '入门' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.配置参考": {
+    "message": "Configuration",
+    "description": "The label for category '配置参考' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.插件": {
+    "message": "Plugins",
+    "description": "The label for category '插件' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.管理与集成": {
+    "message": "Management & Integration",
+    "description": "The label for category '管理与集成' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.架构与性能": {
+    "message": "Architecture & Performance",
+    "description": "The label for category '架构与性能' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.项目": {
+    "message": "Project",
+    "description": "The label for category '项目' in sidebar 'docsSidebar'"
   }
 }

@@ -7,6 +7,13 @@
       "runtimeArgs": ["--dir", "webui", "dev"],
       "port": 3000,
       "autoPort": true
+    },
+    {
+      "name": "docs",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "docs", "run", "start"],
+      "port": 3000,
+      "autoPort": true
     }
   ]
 }
