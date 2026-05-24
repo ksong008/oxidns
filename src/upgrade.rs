@@ -704,7 +704,6 @@ fn restart_after_apply(restart_context: UpgradeContext) -> Result<()> {
 
 #[cfg(windows)]
 fn unpack_zip(archive: &std::path::Path, out_dir: &std::path::Path) -> Result<()> {
-    use std::io::Read as _;
     let file = File::open(archive).map_err(|e| {
         DnsError::runtime(format!("failed to open zip '{}': {e}", archive.display()))
     })?;
