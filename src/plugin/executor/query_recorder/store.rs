@@ -15,8 +15,11 @@ use tokio::sync::broadcast;
 
 use super::backend::{RecorderBackend, WriterCommand, WriterThreadContext};
 use super::model::{
-    ListCursor, ListQuery, PendingRecord, PluginStatsKind, PluginStatsRow, PluginsStatsQuery,
-    QueryRecordFilter, QueryRecordStatus, RecordDetail, RecordRow, StepJson, TableNames,
+    DistributionQuery, DistributionResponse, DistributionRow, LatencyHistogramBucket, LatencyQuery,
+    LatencySlowRow, LatencySummary, ListCursor, ListQuery, PendingRecord, PluginStatsKind,
+    PluginStatsRow, PluginsStatsQuery, QueryRecordFilter, QueryRecordStatus, RecordDetail,
+    RecordRow, StepJson, TableNames, TimeseriesPoint, TimeseriesQuery, TimeseriesResponse,
+    TopBucketRow, TopBucketsResponse, TopQuery,
 };
 use crate::core::error::{DnsError, Result};
 
@@ -26,11 +29,24 @@ const PLUGIN_STATS_SAMPLE_LIMIT: usize = 10_000;
 
 pub(super) fn open_database(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
+    // Tuned for a workload of "one writer + bursty readers".
+    // - WAL + synchronous=NORMAL is the standard high-throughput combo for the
+    //   writer thread and keeps readers non-blocking.
+    // - temp_store=MEMORY keeps the implicit temp tables that GROUP BY / ORDER BY /
+    //   DISTINCT create off the disk on every aggregation query.
+    // - cache_size=-32768 = 32 MiB per connection (negative means KiB). The stats
+    //   endpoints repeatedly hit the same recent rows, so the cache amortizes
+    //   cleanly across read connections.
+    // - mmap_size lets SQLite memory-map the DB pages, which is a noticeable
+    //   speedup for read-heavy SELECTs once the OS page cache is warm.
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA synchronous=NORMAL;
          PRAGMA foreign_keys=ON;
-         PRAGMA auto_vacuum=INCREMENTAL;",
+         PRAGMA auto_vacuum=INCREMENTAL;
+         PRAGMA temp_store=MEMORY;
+         PRAGMA cache_size=-32768;
+         PRAGMA mmap_size=134217728;",
     )?;
     Ok(conn)
 }
@@ -117,7 +133,20 @@ pub(crate) fn create_schema(conn: &mut Connection, tables: &TableNames) -> rusql
         CREATE INDEX IF NOT EXISTS {records}_client_ip_idx ON {records}(client_ip);
         CREATE INDEX IF NOT EXISTS {records}_rcode_idx ON {records}(rcode);
         CREATE INDEX IF NOT EXISTS {steps}_kind_tag_outcome_idx ON {steps}(kind, tag, outcome);
-        CREATE INDEX IF NOT EXISTS {steps}_record_id_idx ON {steps}(record_id);",
+        CREATE INDEX IF NOT EXISTS {steps}_record_id_idx ON {steps}(record_id);
+        -- Covering index for the matcher_tag EXISTS subquery used by /records
+        -- and /stats endpoints. Without record_id in the index tail SQLite
+        -- has to do a second lookup per candidate, which makes rapid
+        -- matcher-click filtering pile up in the blocking pool.
+        CREATE INDEX IF NOT EXISTS {steps}_matcher_lookup_idx
+            ON {steps}(kind, tag, outcome, record_id);
+        -- Speeds up `/stats/plugins` style JOINs which find `s.record_id = r.id
+        -- AND s.kind = ?`. With only the single-column record_id index the
+        -- planner reads every step for that record and filters by kind in
+        -- memory; the (record_id, kind) prefix turns that into a covered
+        -- range lookup.
+        CREATE INDEX IF NOT EXISTS {steps}_record_kind_idx
+            ON {steps}(record_id, kind);",
         records = tables.records,
         steps = tables.steps,
     ))
@@ -557,15 +586,21 @@ pub(super) fn load_plugin_stats(
         &query.filter,
     )?;
     let where_sql = join_clauses(&clauses);
-    let kind_join_filter = if query.kind == PluginStatsKind::All {
+    // Applied in the step_agg WHERE clause so SQLite can use the
+    // (kind, tag, outcome, record_id) covering index with a leading
+    // kind= equality rather than a per-record nested lookup.
+    let kind_where_filter = if query.kind == PluginStatsKind::All {
         String::new()
     } else {
-        " AND s.kind = ?".to_string()
+        "AND s.kind = ?".to_string()
     };
     params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
     if query.kind != PluginStatsKind::All {
         params.push(Value::Text(query.kind.sql_value().to_string()));
     }
+    // Restructured from a cross-join (sample_count × sample_records × steps)
+    // to an IN-subquery so SQLite aggregates steps directly without producing
+    // a 10k-row intermediate for every API call.
     let sql = format!(
         "WITH sample_records AS (
             SELECT r.id
@@ -574,41 +609,53 @@ pub(super) fn load_plugin_stats(
             ORDER BY r.created_at_ms DESC, r.id DESC
             LIMIT ?
          ),
-         sample_count AS (
+         totals AS (
             SELECT COUNT(*) AS total_records FROM sample_records
+         ),
+         step_agg AS (
+            SELECT
+                s.kind,
+                s.tag,
+                SUM(CASE
+                    WHEN s.kind = 'matcher'
+                     AND s.outcome IN ('matched', 'not_matched') THEN 1
+                    ELSE 0
+                END) AS checked,
+                SUM(CASE
+                    WHEN s.kind = 'matcher' AND s.outcome = 'matched' THEN 1
+                    ELSE 0
+                END) AS matched,
+                SUM(CASE
+                    WHEN s.kind = 'executor' AND s.outcome = 'entered' THEN 1
+                    WHEN s.kind = 'builtin' THEN 1
+                    ELSE 0
+                END) AS executed,
+                COUNT(DISTINCT s.record_id) AS query_hits
+            FROM {steps} s
+            WHERE s.record_id IN (SELECT id FROM sample_records)
+            {kind_where_filter}
+            GROUP BY s.kind, s.tag
          )
          SELECT
-            sample_count.total_records,
-            s.kind,
-            s.tag,
-            COALESCE(SUM(CASE
-                WHEN s.kind = 'matcher' AND s.outcome IN ('matched', 'not_matched') THEN 1
-                ELSE 0
-            END), 0) AS checked,
-            COALESCE(SUM(CASE
-                WHEN s.kind = 'matcher' AND s.outcome = 'matched' THEN 1
-                ELSE 0
-            END), 0) AS matched,
-            COALESCE(SUM(CASE
-                WHEN s.kind = 'executor' AND s.outcome = 'entered' THEN 1
-                WHEN s.kind = 'builtin' THEN 1
-                ELSE 0
-            END), 0) AS executed,
-            COUNT(DISTINCT s.record_id) AS query_hits
-         FROM sample_count
-         LEFT JOIN sample_records r ON 1 = 1
-         LEFT JOIN {steps} s ON s.record_id = r.id{kind_join_filter}
-         GROUP BY sample_count.total_records, s.kind, s.tag
-         ORDER BY s.kind ASC, query_hits DESC, s.tag ASC",
+            totals.total_records,
+            sa.kind,
+            sa.tag,
+            sa.checked,
+            sa.matched,
+            sa.executed,
+            sa.query_hits
+         FROM totals
+         LEFT JOIN step_agg sa ON 1 = 1
+         ORDER BY sa.kind ASC, sa.query_hits DESC, sa.tag ASC",
         steps = backend.tables.steps,
         records = backend.tables.records,
-        kind_join_filter = kind_join_filter
+        kind_where_filter = kind_where_filter
     );
 
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params_from_iter(params))?;
 
-    let mut total_records = 0;
+    let mut total_records = 0u64;
     let mut stats = Vec::new();
     while let Some(row) = rows.next()? {
         total_records = row.get::<_, i64>(0).and_then(non_negative_u64)?;
@@ -636,6 +683,526 @@ pub(super) fn load_plugin_stats(
     Ok((total_records, stats))
 }
 
+pub(super) fn load_top_clients(
+    backend: Arc<RecorderBackend>,
+    query: TopQuery,
+) -> std::result::Result<TopBucketsResponse, DnsError> {
+    let conn = open_database(&backend.path)?;
+    let (clauses, mut params) = record_filter_clauses(
+        "r",
+        &backend.tables,
+        query.since_ms,
+        query.until_ms,
+        &query.filter,
+    )?;
+    let where_sql = join_clauses(&clauses);
+    params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
+    let limit = top_limit(query.limit);
+    params.push(Value::Integer(limit as i64));
+
+    let sql = format!(
+        "WITH sample_records AS (
+            SELECT r.id, r.client_ip
+            FROM {records} r
+            WHERE {where_sql}
+            ORDER BY r.created_at_ms DESC, r.id DESC
+            LIMIT ?
+         ),
+         totals AS (
+            SELECT COUNT(*) AS sample_size FROM sample_records
+         )
+         SELECT totals.sample_size, sample_records.client_ip, COUNT(*) AS count
+         FROM totals
+         LEFT JOIN sample_records ON 1 = 1
+         GROUP BY totals.sample_size, sample_records.client_ip
+         ORDER BY count DESC, sample_records.client_ip ASC
+         LIMIT ?",
+        records = backend.tables.records,
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(params_from_iter(params))?;
+    let mut sample_size = 0u64;
+    let mut bucket_rows: Vec<TopBucketRow> = Vec::new();
+    while let Some(row) = rows.next()? {
+        sample_size = row.get::<_, i64>(0).and_then(non_negative_u64)?;
+        let Some(client_ip) = row.get::<_, Option<String>>(1)? else {
+            continue;
+        };
+        let count = row.get::<_, i64>(2).and_then(non_negative_u64)?;
+        let share = bucket_share(count, sample_size);
+        bucket_rows.push(TopBucketRow {
+            key: client_ip,
+            count,
+            share,
+        });
+    }
+    Ok(TopBucketsResponse {
+        ok: true,
+        sample_size,
+        rows: bucket_rows,
+    })
+}
+
+pub(super) fn load_top_qnames(
+    backend: Arc<RecorderBackend>,
+    query: TopQuery,
+) -> std::result::Result<TopBucketsResponse, DnsError> {
+    let conn = open_database(&backend.path)?;
+    let (clauses, mut params) = record_filter_clauses(
+        "r",
+        &backend.tables,
+        query.since_ms,
+        query.until_ms,
+        &query.filter,
+    )?;
+    let where_sql = join_clauses(&clauses);
+    params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
+    let limit = top_limit(query.limit);
+    params.push(Value::Integer(limit as i64));
+
+    let sql = format!(
+        "WITH sample_records AS (
+            SELECT r.id, r.questions_json
+            FROM {records} r
+            WHERE {where_sql}
+            ORDER BY r.created_at_ms DESC, r.id DESC
+            LIMIT ?
+         ),
+         totals AS (
+            SELECT COUNT(*) AS sample_size FROM sample_records
+         )
+         SELECT
+            totals.sample_size,
+            LOWER(json_extract(q.value, '$.name')) AS qname,
+            COUNT(*) AS count
+         FROM totals
+         LEFT JOIN sample_records ON 1 = 1
+         LEFT JOIN json_each(sample_records.questions_json) AS q ON 1 = 1
+         GROUP BY totals.sample_size, qname
+         ORDER BY count DESC, qname ASC
+         LIMIT ?",
+        records = backend.tables.records,
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(params_from_iter(params))?;
+    let mut sample_size = 0u64;
+    let mut bucket_rows: Vec<TopBucketRow> = Vec::new();
+    while let Some(row) = rows.next()? {
+        sample_size = row.get::<_, i64>(0).and_then(non_negative_u64)?;
+        let Some(qname) = row.get::<_, Option<String>>(1)? else {
+            continue;
+        };
+        let count = row.get::<_, i64>(2).and_then(non_negative_u64)?;
+        let share = bucket_share(count, sample_size);
+        bucket_rows.push(TopBucketRow {
+            key: qname,
+            count,
+            share,
+        });
+    }
+    Ok(TopBucketsResponse {
+        ok: true,
+        sample_size,
+        rows: bucket_rows,
+    })
+}
+
+pub(super) fn load_qtype_distribution(
+    backend: Arc<RecorderBackend>,
+    query: DistributionQuery,
+) -> std::result::Result<DistributionResponse, DnsError> {
+    let conn = open_database(&backend.path)?;
+    let (clauses, mut params) = record_filter_clauses(
+        "r",
+        &backend.tables,
+        query.since_ms,
+        query.until_ms,
+        &query.filter,
+    )?;
+    let where_sql = join_clauses(&clauses);
+    params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
+
+    let sql = format!(
+        "WITH sample_records AS (
+            SELECT r.id, r.questions_json
+            FROM {records} r
+            WHERE {where_sql}
+            ORDER BY r.created_at_ms DESC, r.id DESC
+            LIMIT ?
+         ),
+         totals AS (
+            SELECT COUNT(*) AS sample_size FROM sample_records
+         )
+         SELECT
+            totals.sample_size,
+            UPPER(json_extract(q.value, '$.qtype')) AS qtype,
+            COUNT(*) AS count
+         FROM totals
+         LEFT JOIN sample_records ON 1 = 1
+         LEFT JOIN json_each(sample_records.questions_json) AS q ON 1 = 1
+         GROUP BY totals.sample_size, qtype
+         ORDER BY count DESC, qtype ASC",
+        records = backend.tables.records,
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(params_from_iter(params))?;
+    let mut sample_size = 0u64;
+    let mut distribution_rows: Vec<DistributionRow> = Vec::new();
+    while let Some(row) = rows.next()? {
+        sample_size = row.get::<_, i64>(0).and_then(non_negative_u64)?;
+        let Some(qtype) = row.get::<_, Option<String>>(1)? else {
+            continue;
+        };
+        let count = row.get::<_, i64>(2).and_then(non_negative_u64)?;
+        let share = bucket_share(count, sample_size);
+        distribution_rows.push(DistributionRow {
+            key: qtype,
+            count,
+            share,
+        });
+    }
+    Ok(DistributionResponse {
+        ok: true,
+        sample_size,
+        rows: distribution_rows,
+    })
+}
+
+pub(super) fn load_rcode_distribution(
+    backend: Arc<RecorderBackend>,
+    query: DistributionQuery,
+) -> std::result::Result<DistributionResponse, DnsError> {
+    let conn = open_database(&backend.path)?;
+    let (clauses, mut params) = record_filter_clauses(
+        "r",
+        &backend.tables,
+        query.since_ms,
+        query.until_ms,
+        &query.filter,
+    )?;
+    let where_sql = join_clauses(&clauses);
+    params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
+
+    let sql = format!(
+        "WITH sample_records AS (
+            SELECT r.id, r.rcode, r.error, r.has_response
+            FROM {records} r
+            WHERE {where_sql}
+            ORDER BY r.created_at_ms DESC, r.id DESC
+            LIMIT ?
+         ),
+         totals AS (
+            SELECT COUNT(*) AS sample_size FROM sample_records
+         )
+         SELECT
+            totals.sample_size,
+            CASE
+                WHEN sample_records.rcode IS NOT NULL THEN sample_records.rcode
+                WHEN sample_records.error IS NOT NULL THEN '_ERROR'
+                WHEN sample_records.has_response = 0 THEN '_NO_RESPONSE'
+                ELSE '_UNKNOWN'
+            END AS bucket,
+            COUNT(*) AS count
+         FROM totals
+         LEFT JOIN sample_records ON 1 = 1
+         GROUP BY totals.sample_size, bucket
+         ORDER BY count DESC, bucket ASC",
+        records = backend.tables.records,
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(params_from_iter(params))?;
+    let mut sample_size = 0u64;
+    let mut distribution_rows: Vec<DistributionRow> = Vec::new();
+    while let Some(row) = rows.next()? {
+        sample_size = row.get::<_, i64>(0).and_then(non_negative_u64)?;
+        let Some(bucket) = row.get::<_, Option<String>>(1)? else {
+            continue;
+        };
+        let count = row.get::<_, i64>(2).and_then(non_negative_u64)?;
+        let share = bucket_share(count, sample_size);
+        distribution_rows.push(DistributionRow {
+            key: bucket,
+            count,
+            share,
+        });
+    }
+    Ok(DistributionResponse {
+        ok: true,
+        sample_size,
+        rows: distribution_rows,
+    })
+}
+
+pub(super) fn load_latency_summary(
+    backend: Arc<RecorderBackend>,
+    query: LatencyQuery,
+) -> std::result::Result<LatencySummary, DnsError> {
+    let conn = open_database(&backend.path)?;
+    let (clauses, mut params) = record_filter_clauses(
+        "r",
+        &backend.tables,
+        query.since_ms,
+        query.until_ms,
+        &query.filter,
+    )?;
+    let where_sql = join_clauses(&clauses);
+    params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
+    let elapsed_sql = format!(
+        "SELECT r.elapsed_ms
+         FROM {records} r
+         WHERE {where_sql}
+         ORDER BY r.created_at_ms DESC, r.id DESC
+         LIMIT ?",
+        records = backend.tables.records,
+    );
+
+    let mut elapsed_values: Vec<u64> = Vec::new();
+    {
+        let mut stmt = conn.prepare(&elapsed_sql)?;
+        let mut rows = stmt.query(params_from_iter(params.clone()))?;
+        while let Some(row) = rows.next()? {
+            let value = row.get::<_, i64>(0).and_then(non_negative_u64)?;
+            elapsed_values.push(value);
+        }
+    }
+
+    let sample_size = elapsed_values.len() as u64;
+    let (avg_ms, p50_ms, p95_ms, p99_ms, max_ms) = latency_percentiles(&mut elapsed_values);
+    let histogram = latency_histogram(&elapsed_values);
+
+    let slow_limit = top_limit(query.slow_limit);
+    let (slow_clauses, mut slow_params) = record_filter_clauses(
+        "r",
+        &backend.tables,
+        query.since_ms,
+        query.until_ms,
+        &query.filter,
+    )?;
+    let slow_where_sql = join_clauses(&slow_clauses);
+    slow_params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
+    slow_params.push(Value::Integer(slow_limit as i64));
+    let slow_sql = format!(
+        "WITH sample_records AS (
+            SELECT r.id, r.elapsed_ms, r.questions_json
+            FROM {records} r
+            WHERE {where_sql}
+            ORDER BY r.created_at_ms DESC, r.id DESC
+            LIMIT ?
+         )
+         SELECT
+            LOWER(json_extract(q.value, '$.name')) AS qname,
+            COUNT(*) AS count,
+            AVG(sample_records.elapsed_ms) AS avg_ms,
+            MAX(sample_records.elapsed_ms) AS max_ms
+         FROM sample_records, json_each(sample_records.questions_json) AS q
+         GROUP BY qname
+         HAVING qname IS NOT NULL
+         ORDER BY avg_ms DESC, count DESC
+         LIMIT ?",
+        records = backend.tables.records,
+        where_sql = slow_where_sql,
+    );
+    let mut slow_top: Vec<LatencySlowRow> = Vec::new();
+    {
+        let mut stmt = conn.prepare(&slow_sql)?;
+        let mut rows = stmt.query(params_from_iter(slow_params))?;
+        while let Some(row) = rows.next()? {
+            let Some(qname) = row.get::<_, Option<String>>(0)? else {
+                continue;
+            };
+            slow_top.push(LatencySlowRow {
+                qname,
+                count: row.get::<_, i64>(1).and_then(non_negative_u64)?,
+                avg_ms: row.get::<_, Option<f64>>(2)?.unwrap_or(0.0),
+                max_ms: row.get::<_, i64>(3).and_then(non_negative_u64)?,
+            });
+        }
+    }
+
+    Ok(LatencySummary {
+        ok: true,
+        sample_size,
+        avg_ms,
+        p50_ms,
+        p95_ms,
+        p99_ms,
+        max_ms,
+        histogram,
+        slow_top,
+    })
+}
+
+pub(super) fn load_timeseries(
+    backend: Arc<RecorderBackend>,
+    query: TimeseriesQuery,
+) -> std::result::Result<TimeseriesResponse, DnsError> {
+    let conn = open_database(&backend.path)?;
+    let (clauses, mut params) = record_filter_clauses(
+        "r",
+        &backend.tables,
+        query.since_ms,
+        query.until_ms,
+        &query.filter,
+    )?;
+    let where_sql = join_clauses(&clauses);
+    params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
+
+    let bucket_ms = query.bucket.millis();
+    let sql = format!(
+        "SELECT r.created_at_ms, r.elapsed_ms, r.error, r.has_response
+         FROM {records} r
+         WHERE {where_sql}
+         ORDER BY r.created_at_ms DESC, r.id DESC
+         LIMIT ?",
+        records = backend.tables.records,
+    );
+
+    #[derive(Default)]
+    struct Aggregator {
+        total: u64,
+        error_count: u64,
+        no_response_count: u64,
+        elapsed_sum: u64,
+        elapsed_values: Vec<u64>,
+    }
+    let mut buckets: std::collections::BTreeMap<i64, Aggregator> =
+        std::collections::BTreeMap::new();
+    let mut sample_size = 0u64;
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(params_from_iter(params))?;
+    while let Some(row) = rows.next()? {
+        let created_at_ms = row.get::<_, i64>(0)?;
+        let elapsed_ms = row.get::<_, i64>(1).and_then(non_negative_u64)?;
+        let error = row.get::<_, Option<String>>(2)?;
+        let has_response = row.get::<_, i64>(3)? != 0;
+        let bucket = bucket_floor(created_at_ms, bucket_ms);
+        let aggregator = buckets.entry(bucket).or_default();
+        aggregator.total = aggregator.total.saturating_add(1);
+        if error.is_some() {
+            aggregator.error_count = aggregator.error_count.saturating_add(1);
+        }
+        if error.is_none() && !has_response {
+            aggregator.no_response_count = aggregator.no_response_count.saturating_add(1);
+        }
+        aggregator.elapsed_sum = aggregator.elapsed_sum.saturating_add(elapsed_ms);
+        aggregator.elapsed_values.push(elapsed_ms);
+        sample_size = sample_size.saturating_add(1);
+    }
+
+    let mut points: Vec<TimeseriesPoint> = Vec::with_capacity(buckets.len());
+    for (bucket, mut aggregator) in buckets {
+        let avg_ms = if aggregator.total == 0 {
+            0.0
+        } else {
+            aggregator.elapsed_sum as f64 / aggregator.total as f64
+        };
+        let p95_ms = percentile_value(&mut aggregator.elapsed_values, 0.95);
+        points.push(TimeseriesPoint {
+            bucket_ms: bucket,
+            total: aggregator.total,
+            error_count: aggregator.error_count,
+            no_response_count: aggregator.no_response_count,
+            avg_ms,
+            p95_ms,
+        });
+    }
+    if points.len() > query.max_buckets {
+        let drop = points.len() - query.max_buckets;
+        points.drain(0..drop);
+    }
+
+    Ok(TimeseriesResponse {
+        ok: true,
+        sample_size,
+        bucket_ms,
+        points,
+    })
+}
+
+fn top_limit(limit: usize) -> usize {
+    limit.clamp(1, 200)
+}
+
+fn bucket_share(count: u64, sample_size: u64) -> f64 {
+    if sample_size == 0 {
+        0.0
+    } else {
+        count as f64 / sample_size as f64
+    }
+}
+
+fn bucket_floor(created_at_ms: i64, bucket_ms: i64) -> i64 {
+    if bucket_ms <= 0 {
+        return created_at_ms;
+    }
+    let remainder = created_at_ms.rem_euclid(bucket_ms);
+    created_at_ms - remainder
+}
+
+fn latency_percentiles(values: &mut [u64]) -> (f64, u64, u64, u64, u64) {
+    if values.is_empty() {
+        return (0.0, 0, 0, 0, 0);
+    }
+    values.sort_unstable();
+    let avg = values.iter().copied().sum::<u64>() as f64 / values.len() as f64;
+    let p50 = percentile_of_sorted(values, 0.50);
+    let p95 = percentile_of_sorted(values, 0.95);
+    let p99 = percentile_of_sorted(values, 0.99);
+    let max = *values.last().unwrap_or(&0);
+    (avg, p50, p95, p99, max)
+}
+
+fn percentile_value(values: &mut [u64], quantile: f64) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    values.sort_unstable();
+    percentile_of_sorted(values, quantile)
+}
+
+fn percentile_of_sorted(sorted_values: &[u64], quantile: f64) -> u64 {
+    if sorted_values.is_empty() {
+        return 0;
+    }
+    let clamped = quantile.clamp(0.0, 1.0);
+    let max_index = sorted_values.len() - 1;
+    let rank = clamped * max_index as f64;
+    let index = rank.round() as usize;
+    let index = index.min(max_index);
+    sorted_values[index]
+}
+
+const LATENCY_BUCKET_EDGES_MS: [u64; 6] = [10, 20, 50, 100, 300, 1000];
+
+fn latency_histogram(values: &[u64]) -> Vec<LatencyHistogramBucket> {
+    let mut counts = vec![0u64; LATENCY_BUCKET_EDGES_MS.len() + 1];
+    for value in values {
+        let mut placed = false;
+        for (index, edge) in LATENCY_BUCKET_EDGES_MS.iter().enumerate() {
+            if *value < *edge {
+                counts[index] = counts[index].saturating_add(1);
+                placed = true;
+                break;
+            }
+        }
+        if !placed {
+            *counts.last_mut().expect("at least one bucket") =
+                counts.last().copied().unwrap_or(0).saturating_add(1);
+        }
+    }
+    let mut histogram = Vec::with_capacity(counts.len());
+    for (index, count) in counts.into_iter().enumerate() {
+        let lt_ms = LATENCY_BUCKET_EDGES_MS.get(index).copied();
+        histogram.push(LatencyHistogramBucket { lt_ms, count });
+    }
+    histogram
+}
+
 fn record_filter_clauses(
     alias: &str,
     tables: &TableNames,
@@ -655,12 +1222,24 @@ fn record_filter_clauses(
         params.push(Value::Integer(as_i64(until_ms)?));
     }
     if let Some(matcher_tag) = filter.matcher_tag.as_deref() {
+        // IMPORTANT: keep this as an UNCORRELATED `IN (SELECT ...)` subquery.
+        //
+        // An EXISTS form that references `{alias}.id` becomes a correlated
+        // subquery, forcing SQLite to re-run the lookup for every candidate
+        // record. With LIMIT 100 plus a low-selectivity matcher (say, hits
+        // 0.5% of records), the planner can end up scanning hundreds of
+        // thousands of rows even with the covering steps index — making the
+        // /records endpoint feel unresponsive when a matcher row is clicked.
+        //
+        // This IN form is uncorrelated: SQLite materializes the matched
+        // record_id set once (a tight index range scan over the
+        // `(kind, tag, outcome, record_id)` index), then the outer plan
+        // walks records desc by created_at and does O(1) membership tests.
         clauses.push(format!(
-            "EXISTS (
-                SELECT 1
+            "{alias}.id IN (
+                SELECT s.record_id
                 FROM {steps} s
-                WHERE s.record_id = {alias}.id
-                  AND s.kind = 'matcher'
+                WHERE s.kind = 'matcher'
                   AND s.outcome = 'matched'
                   AND s.tag = ?
             )",

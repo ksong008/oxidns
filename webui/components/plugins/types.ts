@@ -33,11 +33,28 @@ export interface PluginCardTemplateProps extends PluginCardComponentProps {
   children?: ReactNode;
 }
 
+export interface PluginExtraTab {
+  /** Tabs primitive value; must be unique within the detail view. */
+  value: string;
+  /** Label rendered inside the TabsTrigger; PluginDetailTemplate keeps the icon outside. */
+  label: ReactNode;
+  /** Optional icon rendered before the label. */
+  icon?: ReactNode;
+  /** Tab body. */
+  content: ReactNode;
+}
+
 export interface PluginDetailTemplateProps extends PluginDetailComponentProps {
   icon?: ReactNode;
   summaryItems?: PluginSummaryItem[];
   configContent?: ReactNode;
   metricsContent?: ReactNode;
+  /**
+   * Extra top-level tabs rendered after the metrics tab and before built-in metrics.
+   * Use this when a plugin wants to expose a view that is conceptually peer to
+   * "配置" / "统计" rather than nested under one of them.
+   */
+  extraTabs?: PluginExtraTab[];
 }
 
 export interface PluginComponentDefinition {

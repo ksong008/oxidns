@@ -37,6 +37,7 @@ export function PluginDetailTemplate({
   summaryItems,
   configContent,
   metricsContent,
+  extraTabs,
 }: PluginDetailTemplateProps) {
   const {
     togglePluginPin,
@@ -109,8 +110,12 @@ export function PluginDetailTemplate({
     metricsContent !== undefined &&
     metricsContent !== null &&
     metricsContent !== false;
+  const resolvedExtraTabs = extraTabs ?? [];
   const visibleTabCount =
-    1 + (hasStatsContent ? 1 : 0) + (hasMetricSeries ? 1 : 0);
+    1 +
+    (hasStatsContent ? 1 : 0) +
+    resolvedExtraTabs.length +
+    (hasMetricSeries ? 1 : 0);
 
   return (
     <div className="flex min-h-full flex-col">
@@ -233,10 +238,18 @@ export function PluginDetailTemplate({
             visibleTabCount === 1 && "grid-cols-1",
             visibleTabCount === 2 && "grid-cols-2",
             visibleTabCount === 3 && "grid-cols-3",
+            visibleTabCount === 4 && "grid-cols-4",
+            visibleTabCount >= 5 && "grid-cols-5",
           )}
         >
           <TabsTrigger value="config">配置</TabsTrigger>
           {hasStatsContent && <TabsTrigger value="stats">统计</TabsTrigger>}
+          {resolvedExtraTabs.map((tab) => (
+            <TabsTrigger key={tab.value} value={tab.value}>
+              {tab.icon}
+              {tab.label}
+            </TabsTrigger>
+          ))}
           {hasMetricSeries && <TabsTrigger value="metrics">指标</TabsTrigger>}
         </TabsList>
 
@@ -311,6 +324,16 @@ export function PluginDetailTemplate({
             {metricsContent}
           </TabsContent>
         )}
+
+        {resolvedExtraTabs.map((tab) => (
+          <TabsContent
+            key={tab.value}
+            value={tab.value}
+            className="mt-4 space-y-4"
+          >
+            {tab.content}
+          </TabsContent>
+        ))}
 
         {hasMetricSeries && (
           <TabsContent value="metrics" className="mt-4 space-y-4">

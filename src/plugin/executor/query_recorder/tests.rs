@@ -7,10 +7,14 @@ use std::time::Duration;
 use tempfile::NamedTempFile;
 
 use super::model::{
-    ListQuery, PendingRecord, PluginStatsKind, PluginsStatsQuery, QueryRecordFilter,
-    QueryRecordStatus, QueryRecorderConfig,
+    DistributionQuery, LatencyQuery, ListQuery, PendingRecord, PluginStatsKind, PluginsStatsQuery,
+    QueryRecordFilter, QueryRecordStatus, QueryRecorderConfig, TimeseriesBucket, TimeseriesQuery,
+    TopQuery,
 };
-use super::store::{load_plugin_stats, query_records, table_names};
+use super::store::{
+    load_latency_summary, load_plugin_stats, load_qtype_distribution, load_rcode_distribution,
+    load_timeseries, load_top_clients, load_top_qnames, query_records, table_names,
+};
 use super::{QueryRecorder, QueryRecorderFactory, resolve_config};
 use crate::core::app_clock::AppClock;
 use crate::core::context::{DnsContext, ExecutionPathEvent};
@@ -601,6 +605,320 @@ async fn test_query_recorder_matcher_stats_use_record_filters() {
     assert_eq!(cn.matched, 0);
     assert_eq!(cn.query_total, 1);
     assert_eq!(cn.query_share, 0.5);
+
+    plugin.destroy().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_query_recorder_plugin_stats_preserve_total_without_steps() {
+    let temp = NamedTempFile::new().unwrap();
+    let config = resolve_config(Some(recorder_config(&temp.path().display().to_string()))).unwrap();
+    let mut plugin = QueryRecorder::new("rec".to_string(), config);
+    plugin.init_for_test().await.unwrap();
+    let backend = plugin.backend.as_ref().unwrap().clone();
+
+    backend.enqueue(pending_record(
+        1_000,
+        1,
+        "www.example.com.",
+        RecordType::A,
+        Ipv4Addr::new(192, 0, 2, 1),
+        Some(Rcode::NoError),
+        None,
+        &[],
+    ));
+    backend.enqueue(pending_record(
+        2_000,
+        2,
+        "ads.example.com.",
+        RecordType::AAAA,
+        Ipv4Addr::new(192, 0, 2, 2),
+        Some(Rcode::NoError),
+        None,
+        &[],
+    ));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let (query_total, stats) = load_plugin_stats(
+        backend,
+        PluginsStatsQuery {
+            since_ms: None,
+            until_ms: None,
+            kind: PluginStatsKind::Matcher,
+            filter: QueryRecordFilter {
+                qname: Some("example".to_string()),
+                ..QueryRecordFilter::default()
+            },
+        },
+    )
+    .unwrap();
+
+    assert_eq!(query_total, 2);
+    assert!(stats.is_empty());
+
+    plugin.destroy().await.unwrap();
+}
+
+async fn seed_demo_records(backend: &std::sync::Arc<super::backend::RecorderBackend>) {
+    backend.enqueue(pending_record(
+        1_000,
+        1,
+        "www.example.com.",
+        RecordType::A,
+        Ipv4Addr::new(192, 0, 2, 1),
+        Some(Rcode::NoError),
+        None,
+        &[],
+    ));
+    backend.enqueue(pending_record(
+        2_000,
+        2,
+        "ads.example.com.",
+        RecordType::AAAA,
+        Ipv4Addr::new(192, 0, 2, 1),
+        Some(Rcode::NXDomain),
+        None,
+        &[],
+    ));
+    backend.enqueue(pending_record(
+        3_000,
+        3,
+        "www.example.com.",
+        RecordType::A,
+        Ipv4Addr::new(192, 0, 2, 2),
+        Some(Rcode::NoError),
+        None,
+        &[],
+    ));
+    backend.enqueue(pending_record(
+        4_000,
+        4,
+        "boom.example.net.",
+        RecordType::A,
+        Ipv4Addr::new(192, 0, 2, 3),
+        None,
+        Some("boom"),
+        &[],
+    ));
+    backend.enqueue(pending_record(
+        5_000,
+        5,
+        "empty.test.",
+        RecordType::HTTPS,
+        Ipv4Addr::new(192, 0, 2, 4),
+        None,
+        None,
+        &[],
+    ));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+}
+
+#[tokio::test]
+async fn test_load_top_clients_ranks_by_count() {
+    let temp = NamedTempFile::new().unwrap();
+    let config = resolve_config(Some(recorder_config(&temp.path().display().to_string()))).unwrap();
+    let mut plugin = QueryRecorder::new("rec".to_string(), config);
+    plugin.init_for_test().await.unwrap();
+    let backend = plugin.backend.as_ref().unwrap().clone();
+    seed_demo_records(&backend).await;
+
+    let response = load_top_clients(
+        backend,
+        TopQuery {
+            since_ms: None,
+            until_ms: None,
+            filter: QueryRecordFilter::default(),
+            limit: 10,
+        },
+    )
+    .unwrap();
+    assert_eq!(response.sample_size, 5);
+    assert_eq!(response.rows[0].key, "192.0.2.1");
+    assert_eq!(response.rows[0].count, 2);
+    assert!((response.rows[0].share - 0.4).abs() < 1.0e-9);
+
+    plugin.destroy().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_load_top_qnames_unwinds_questions() {
+    let temp = NamedTempFile::new().unwrap();
+    let config = resolve_config(Some(recorder_config(&temp.path().display().to_string()))).unwrap();
+    let mut plugin = QueryRecorder::new("rec".to_string(), config);
+    plugin.init_for_test().await.unwrap();
+    let backend = plugin.backend.as_ref().unwrap().clone();
+    seed_demo_records(&backend).await;
+
+    let response = load_top_qnames(
+        backend,
+        TopQuery {
+            since_ms: None,
+            until_ms: None,
+            filter: QueryRecordFilter::default(),
+            limit: 10,
+        },
+    )
+    .unwrap();
+    let top = response
+        .rows
+        .iter()
+        .find(|row| row.key == "www.example.com.")
+        .expect("www.example.com. should be present");
+    assert_eq!(top.count, 2);
+    assert_eq!(response.sample_size, 5);
+
+    plugin.destroy().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_qtype_and_rcode_distribution_counts() {
+    let temp = NamedTempFile::new().unwrap();
+    let config = resolve_config(Some(recorder_config(&temp.path().display().to_string()))).unwrap();
+    let mut plugin = QueryRecorder::new("rec".to_string(), config);
+    plugin.init_for_test().await.unwrap();
+    let backend = plugin.backend.as_ref().unwrap().clone();
+    seed_demo_records(&backend).await;
+
+    let qtype = load_qtype_distribution(
+        backend.clone(),
+        DistributionQuery {
+            since_ms: None,
+            until_ms: None,
+            filter: QueryRecordFilter::default(),
+        },
+    )
+    .unwrap();
+    let a_count = qtype.rows.iter().find(|row| row.key == "A").unwrap().count;
+    let aaaa_count = qtype
+        .rows
+        .iter()
+        .find(|row| row.key == "AAAA")
+        .unwrap()
+        .count;
+    let https_count = qtype
+        .rows
+        .iter()
+        .find(|row| row.key == "HTTPS")
+        .unwrap()
+        .count;
+    assert_eq!(a_count, 3);
+    assert_eq!(aaaa_count, 1);
+    assert_eq!(https_count, 1);
+
+    let rcode = load_rcode_distribution(
+        backend,
+        DistributionQuery {
+            since_ms: None,
+            until_ms: None,
+            filter: QueryRecordFilter::default(),
+        },
+    )
+    .unwrap();
+    let error_bucket = rcode
+        .rows
+        .iter()
+        .find(|row| row.key == "_ERROR")
+        .expect("_ERROR bucket expected for failed records");
+    assert_eq!(error_bucket.count, 1);
+    let no_response_bucket = rcode
+        .rows
+        .iter()
+        .find(|row| row.key == "_NO_RESPONSE")
+        .expect("_NO_RESPONSE bucket expected for missing response");
+    assert_eq!(no_response_bucket.count, 1);
+
+    plugin.destroy().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_latency_summary_returns_percentiles_and_histogram() {
+    let temp = NamedTempFile::new().unwrap();
+    let config = resolve_config(Some(recorder_config(&temp.path().display().to_string()))).unwrap();
+    let mut plugin = QueryRecorder::new("rec".to_string(), config);
+    plugin.init_for_test().await.unwrap();
+    let backend = plugin.backend.as_ref().unwrap().clone();
+    seed_demo_records(&backend).await;
+
+    let summary = load_latency_summary(
+        backend,
+        LatencyQuery {
+            since_ms: None,
+            until_ms: None,
+            filter: QueryRecordFilter::default(),
+            slow_limit: 5,
+        },
+    )
+    .unwrap();
+    assert_eq!(summary.sample_size, 5);
+    assert!(summary.histogram.iter().any(|bucket| bucket.count > 0));
+    assert!(summary.histogram.last().unwrap().lt_ms.is_none());
+    let histogram_total: u64 = summary.histogram.iter().map(|bucket| bucket.count).sum();
+    assert_eq!(histogram_total, summary.sample_size);
+
+    plugin.destroy().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_timeseries_buckets_records_by_minute() {
+    let temp = NamedTempFile::new().unwrap();
+    let config = resolve_config(Some(recorder_config(&temp.path().display().to_string()))).unwrap();
+    let mut plugin = QueryRecorder::new("rec".to_string(), config);
+    plugin.init_for_test().await.unwrap();
+    let backend = plugin.backend.as_ref().unwrap().clone();
+    let minute_ms: i64 = 60_000;
+    backend.enqueue(pending_record(
+        100,
+        10,
+        "a.example.",
+        RecordType::A,
+        Ipv4Addr::new(10, 0, 0, 1),
+        Some(Rcode::NoError),
+        None,
+        &[],
+    ));
+    backend.enqueue(pending_record(
+        200,
+        11,
+        "b.example.",
+        RecordType::A,
+        Ipv4Addr::new(10, 0, 0, 1),
+        None,
+        Some("boom"),
+        &[],
+    ));
+    backend.enqueue(pending_record(
+        minute_ms + 500,
+        12,
+        "c.example.",
+        RecordType::A,
+        Ipv4Addr::new(10, 0, 0, 2),
+        Some(Rcode::NoError),
+        None,
+        &[],
+    ));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let response = load_timeseries(
+        backend,
+        TimeseriesQuery {
+            since_ms: None,
+            until_ms: None,
+            filter: QueryRecordFilter::default(),
+            bucket: TimeseriesBucket::Minute,
+            max_buckets: 60,
+        },
+    )
+    .unwrap();
+    assert_eq!(response.bucket_ms, minute_ms);
+    assert_eq!(response.sample_size, 3);
+    assert_eq!(response.points.len(), 2);
+    let first = &response.points[0];
+    assert_eq!(first.bucket_ms, 0);
+    assert_eq!(first.total, 2);
+    assert_eq!(first.error_count, 1);
+    let second = &response.points[1];
+    assert_eq!(second.bucket_ms, minute_ms);
+    assert_eq!(second.total, 1);
 
     plugin.destroy().await.unwrap();
 }

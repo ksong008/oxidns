@@ -14,16 +14,25 @@ use tokio::sync::broadcast;
 
 use super::backend::RecorderBackend;
 use super::model::{
-    ListCursor, ListQuery, PluginStatsKind, PluginStatsRow, PluginsStatsQuery, QueryRecordFilter,
-    QueryRecordStatus, RecordDetail, RecordRow,
+    DistributionQuery, LatencyQuery, ListCursor, ListQuery, PluginStatsKind, PluginStatsRow,
+    PluginsStatsQuery, QueryRecordFilter, QueryRecordStatus, RecordDetail, RecordRow,
+    TimeseriesBucket, TimeseriesQuery, TopQuery,
 };
-use super::store::{load_plugin_stats, load_record_detail, query_records};
+use super::store::{
+    load_latency_summary, load_plugin_stats, load_qtype_distribution, load_rcode_distribution,
+    load_record_detail, load_timeseries, load_top_clients, load_top_qnames, query_records,
+};
 use crate::api::{ApiHandler, json_error, json_ok, simple_response, streaming_response};
 use crate::core::error::Result;
 use crate::register_plugin_api;
 
 const DEFAULT_LIST_LIMIT: usize = 100;
 const MAX_LIST_LIMIT: usize = 500;
+const DEFAULT_TOP_LIMIT: usize = 20;
+const MAX_TOP_LIMIT: usize = 200;
+const DEFAULT_SLOW_LIMIT: usize = 20;
+const DEFAULT_TIMESERIES_BUCKETS: usize = 60;
+const MAX_TIMESERIES_BUCKETS: usize = 720;
 const SSE_HEARTBEAT_SECS: u64 = 15;
 
 #[derive(Debug, Clone, Serialize)]
@@ -64,6 +73,36 @@ struct StatsPluginsHandler {
 
 #[derive(Debug)]
 struct StreamHandler {
+    backend: Arc<RecorderBackend>,
+}
+
+#[derive(Debug)]
+struct TopClientsHandler {
+    backend: Arc<RecorderBackend>,
+}
+
+#[derive(Debug)]
+struct TopQnamesHandler {
+    backend: Arc<RecorderBackend>,
+}
+
+#[derive(Debug)]
+struct QtypeDistributionHandler {
+    backend: Arc<RecorderBackend>,
+}
+
+#[derive(Debug)]
+struct RcodeDistributionHandler {
+    backend: Arc<RecorderBackend>,
+}
+
+#[derive(Debug)]
+struct LatencyHandler {
+    backend: Arc<RecorderBackend>,
+}
+
+#[derive(Debug)]
+struct TimeseriesHandler {
     backend: Arc<RecorderBackend>,
 }
 
@@ -259,6 +298,150 @@ struct SseState {
     heartbeat: tokio::time::Interval,
 }
 
+#[async_trait]
+impl ApiHandler for TopClientsHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        let query = match parse_top_query(request.uri().query()) {
+            Ok(query) => query,
+            Err(err) => return json_error(StatusCode::BAD_REQUEST, "invalid_query", err),
+        };
+        let backend = self.backend.clone();
+        match tokio::task::spawn_blocking(move || load_top_clients(backend, query)).await {
+            Ok(Ok(response)) => json_ok(StatusCode::OK, &response),
+            Ok(Err(err)) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query_recorder_top_clients_failed",
+                err.to_string(),
+            ),
+            Err(err) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query_recorder_top_clients_failed",
+                format!("blocking task failed: {err}"),
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl ApiHandler for TopQnamesHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        let query = match parse_top_query(request.uri().query()) {
+            Ok(query) => query,
+            Err(err) => return json_error(StatusCode::BAD_REQUEST, "invalid_query", err),
+        };
+        let backend = self.backend.clone();
+        match tokio::task::spawn_blocking(move || load_top_qnames(backend, query)).await {
+            Ok(Ok(response)) => json_ok(StatusCode::OK, &response),
+            Ok(Err(err)) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query_recorder_top_qnames_failed",
+                err.to_string(),
+            ),
+            Err(err) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query_recorder_top_qnames_failed",
+                format!("blocking task failed: {err}"),
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl ApiHandler for QtypeDistributionHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        let query = match parse_distribution_query(request.uri().query()) {
+            Ok(query) => query,
+            Err(err) => return json_error(StatusCode::BAD_REQUEST, "invalid_query", err),
+        };
+        let backend = self.backend.clone();
+        match tokio::task::spawn_blocking(move || load_qtype_distribution(backend, query)).await {
+            Ok(Ok(response)) => json_ok(StatusCode::OK, &response),
+            Ok(Err(err)) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query_recorder_qtype_failed",
+                err.to_string(),
+            ),
+            Err(err) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query_recorder_qtype_failed",
+                format!("blocking task failed: {err}"),
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl ApiHandler for RcodeDistributionHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        let query = match parse_distribution_query(request.uri().query()) {
+            Ok(query) => query,
+            Err(err) => return json_error(StatusCode::BAD_REQUEST, "invalid_query", err),
+        };
+        let backend = self.backend.clone();
+        match tokio::task::spawn_blocking(move || load_rcode_distribution(backend, query)).await {
+            Ok(Ok(response)) => json_ok(StatusCode::OK, &response),
+            Ok(Err(err)) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query_recorder_rcode_failed",
+                err.to_string(),
+            ),
+            Err(err) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query_recorder_rcode_failed",
+                format!("blocking task failed: {err}"),
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl ApiHandler for LatencyHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        let query = match parse_latency_query(request.uri().query()) {
+            Ok(query) => query,
+            Err(err) => return json_error(StatusCode::BAD_REQUEST, "invalid_query", err),
+        };
+        let backend = self.backend.clone();
+        match tokio::task::spawn_blocking(move || load_latency_summary(backend, query)).await {
+            Ok(Ok(response)) => json_ok(StatusCode::OK, &response),
+            Ok(Err(err)) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query_recorder_latency_failed",
+                err.to_string(),
+            ),
+            Err(err) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query_recorder_latency_failed",
+                format!("blocking task failed: {err}"),
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl ApiHandler for TimeseriesHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        let query = match parse_timeseries_query(request.uri().query()) {
+            Ok(query) => query,
+            Err(err) => return json_error(StatusCode::BAD_REQUEST, "invalid_query", err),
+        };
+        let backend = self.backend.clone();
+        match tokio::task::spawn_blocking(move || load_timeseries(backend, query)).await {
+            Ok(Ok(response)) => json_ok(StatusCode::OK, &response),
+            Ok(Err(err)) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query_recorder_timeseries_failed",
+                err.to_string(),
+            ),
+            Err(err) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query_recorder_timeseries_failed",
+                format!("blocking task failed: {err}"),
+            ),
+        }
+    }
+}
+
 pub(super) fn parse_list_query(query: Option<&str>) -> std::result::Result<ListQuery, String> {
     let mut cursor = None;
     let mut limit = DEFAULT_LIST_LIMIT;
@@ -326,6 +509,147 @@ pub(super) fn parse_plugins_stats_query(
         kind,
         filter,
     })
+}
+
+pub(super) fn parse_top_query(query: Option<&str>) -> std::result::Result<TopQuery, String> {
+    let mut since_ms = None;
+    let mut until_ms = None;
+    let mut limit = DEFAULT_TOP_LIMIT;
+    let mut filter = QueryRecordFilter::default();
+    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
+        match key.as_ref() {
+            "since_ms" => since_ms = Some(parse_u64_query("since_ms", value.as_ref())?),
+            "until_ms" => until_ms = Some(parse_u64_query("until_ms", value.as_ref())?),
+            "limit" => limit = parse_top_limit(value.as_ref())?,
+            other => apply_filter_param(&mut filter, other, value.as_ref())?,
+        }
+    }
+    Ok(TopQuery {
+        since_ms,
+        until_ms,
+        filter,
+        limit,
+    })
+}
+
+pub(super) fn parse_distribution_query(
+    query: Option<&str>,
+) -> std::result::Result<DistributionQuery, String> {
+    let mut since_ms = None;
+    let mut until_ms = None;
+    let mut filter = QueryRecordFilter::default();
+    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
+        match key.as_ref() {
+            "since_ms" => since_ms = Some(parse_u64_query("since_ms", value.as_ref())?),
+            "until_ms" => until_ms = Some(parse_u64_query("until_ms", value.as_ref())?),
+            other => apply_filter_param(&mut filter, other, value.as_ref())?,
+        }
+    }
+    Ok(DistributionQuery {
+        since_ms,
+        until_ms,
+        filter,
+    })
+}
+
+pub(super) fn parse_latency_query(
+    query: Option<&str>,
+) -> std::result::Result<LatencyQuery, String> {
+    let mut since_ms = None;
+    let mut until_ms = None;
+    let mut slow_limit = DEFAULT_SLOW_LIMIT;
+    let mut filter = QueryRecordFilter::default();
+    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
+        match key.as_ref() {
+            "since_ms" => since_ms = Some(parse_u64_query("since_ms", value.as_ref())?),
+            "until_ms" => until_ms = Some(parse_u64_query("until_ms", value.as_ref())?),
+            "slow_limit" | "limit" => slow_limit = parse_top_limit(value.as_ref())?,
+            other => apply_filter_param(&mut filter, other, value.as_ref())?,
+        }
+    }
+    Ok(LatencyQuery {
+        since_ms,
+        until_ms,
+        filter,
+        slow_limit,
+    })
+}
+
+pub(super) fn parse_timeseries_query(
+    query: Option<&str>,
+) -> std::result::Result<TimeseriesQuery, String> {
+    let mut since_ms = None;
+    let mut until_ms = None;
+    let mut bucket = TimeseriesBucket::Minute;
+    let mut max_buckets = DEFAULT_TIMESERIES_BUCKETS;
+    let mut filter = QueryRecordFilter::default();
+    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
+        match key.as_ref() {
+            "since_ms" => since_ms = Some(parse_u64_query("since_ms", value.as_ref())?),
+            "until_ms" => until_ms = Some(parse_u64_query("until_ms", value.as_ref())?),
+            "bucket" => bucket = TimeseriesBucket::parse(value.as_ref())?,
+            "buckets" => max_buckets = parse_timeseries_buckets(value.as_ref())?,
+            other => apply_filter_param(&mut filter, other, value.as_ref())?,
+        }
+    }
+    Ok(TimeseriesQuery {
+        since_ms,
+        until_ms,
+        filter,
+        bucket,
+        max_buckets,
+    })
+}
+
+fn apply_filter_param(
+    filter: &mut QueryRecordFilter,
+    key: &str,
+    value: &str,
+) -> std::result::Result<(), String> {
+    match key {
+        "qname" => filter.qname = optional_text(value),
+        "qtype" => filter.qtype = optional_upper_text(value),
+        "client_ip" => filter.client_ip = optional_text(value),
+        "rcode" => filter.rcode = optional_upper_text(value),
+        "status" => {
+            if let Some(value) = optional_text(value) {
+                filter.status = QueryRecordStatus::parse(value.as_str())?;
+            }
+        }
+        "matcher_tag" => filter.matcher_tag = optional_text(value),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn parse_top_limit(raw: &str) -> std::result::Result<usize, String> {
+    let parsed = raw
+        .parse::<usize>()
+        .map_err(|err| format!("invalid limit query parameter: {err}"))?;
+    if parsed == 0 {
+        return Err("limit must be greater than 0".to_string());
+    }
+    Ok(parsed.min(MAX_TOP_LIMIT))
+}
+
+fn parse_timeseries_buckets(raw: &str) -> std::result::Result<usize, String> {
+    let parsed = raw
+        .parse::<usize>()
+        .map_err(|err| format!("invalid buckets query parameter: {err}"))?;
+    if parsed == 0 {
+        return Err("buckets must be greater than 0".to_string());
+    }
+    Ok(parsed.min(MAX_TIMESERIES_BUCKETS))
+}
+
+impl TimeseriesBucket {
+    fn parse(raw: &str) -> std::result::Result<Self, String> {
+        match raw {
+            "minute" => Ok(Self::Minute),
+            "hour" => Ok(Self::Hour),
+            _ => Err("bucket must be one of minute, hour".to_string()),
+        }
+    }
 }
 
 fn parse_tail_param(query: Option<&str>, max_tail: usize) -> std::result::Result<usize, String> {
@@ -431,6 +755,24 @@ pub(super) fn register(backend: &Arc<RecorderBackend>) -> Result<()> {
             path_prefix: plugin_api.path("/records/")?,
         },
         GET "/stats/plugins" => StatsPluginsHandler {
+            backend: backend.clone(),
+        },
+        GET "/stats/top_clients" => TopClientsHandler {
+            backend: backend.clone(),
+        },
+        GET "/stats/top_qnames" => TopQnamesHandler {
+            backend: backend.clone(),
+        },
+        GET "/stats/qtype" => QtypeDistributionHandler {
+            backend: backend.clone(),
+        },
+        GET "/stats/rcode" => RcodeDistributionHandler {
+            backend: backend.clone(),
+        },
+        GET "/stats/latency" => LatencyHandler {
+            backend: backend.clone(),
+        },
+        GET "/stats/timeseries" => TimeseriesHandler {
             backend: backend.clone(),
         },
         GET "/stream" => StreamHandler {

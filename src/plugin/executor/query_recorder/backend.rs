@@ -71,6 +71,12 @@ impl RecorderBackend {
 
         let tables = table_names(&tag);
         create_schema(&mut conn, &tables)?;
+        // Refresh query planner stats once at startup; this is the cheap
+        // version of ANALYZE and is the recommended way to keep indexes
+        // selectable across schema upgrades.
+        if let Err(err) = conn.execute_batch("PRAGMA optimize;") {
+            warn!("query_recorder PRAGMA optimize failed at startup: {}", err);
+        }
 
         let (queue_tx, queue_rx) = sync_channel(config.queue_size);
         let stop_requested = Arc::new(AtomicBool::new(false));
