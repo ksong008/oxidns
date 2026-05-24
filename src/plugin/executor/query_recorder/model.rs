@@ -193,3 +193,123 @@ pub(super) enum PluginStatsKind {
     Builtin,
     All,
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct TopBucketRow {
+    pub(super) key: String,
+    pub(super) count: u64,
+    pub(super) share: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct TopBucketsResponse {
+    pub(super) ok: bool,
+    pub(super) sample_size: u64,
+    pub(super) rows: Vec<TopBucketRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct DistributionRow {
+    pub(super) key: String,
+    pub(super) count: u64,
+    pub(super) share: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct DistributionResponse {
+    pub(super) ok: bool,
+    pub(super) sample_size: u64,
+    pub(super) rows: Vec<DistributionRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct LatencyHistogramBucket {
+    pub(super) lt_ms: Option<u64>,
+    pub(super) count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct LatencySlowRow {
+    pub(super) qname: String,
+    pub(super) count: u64,
+    pub(super) avg_ms: f64,
+    pub(super) max_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct LatencySummary {
+    pub(super) ok: bool,
+    pub(super) sample_size: u64,
+    pub(super) avg_ms: f64,
+    pub(super) p50_ms: u64,
+    pub(super) p95_ms: u64,
+    pub(super) p99_ms: u64,
+    pub(super) max_ms: u64,
+    pub(super) histogram: Vec<LatencyHistogramBucket>,
+    pub(super) slow_top: Vec<LatencySlowRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct TimeseriesPoint {
+    pub(super) bucket_ms: i64,
+    pub(super) total: u64,
+    pub(super) error_count: u64,
+    pub(super) no_response_count: u64,
+    pub(super) avg_ms: f64,
+    pub(super) p95_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct TimeseriesResponse {
+    pub(super) ok: bool,
+    pub(super) sample_size: u64,
+    pub(super) bucket_ms: i64,
+    pub(super) points: Vec<TimeseriesPoint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TimeseriesBucket {
+    Minute,
+    Hour,
+}
+
+impl TimeseriesBucket {
+    pub(super) fn millis(self) -> i64 {
+        match self {
+            Self::Minute => 60_000,
+            Self::Hour => 3_600_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct TopQuery {
+    pub(super) since_ms: Option<u64>,
+    pub(super) until_ms: Option<u64>,
+    pub(super) filter: QueryRecordFilter,
+    pub(super) limit: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct DistributionQuery {
+    pub(super) since_ms: Option<u64>,
+    pub(super) until_ms: Option<u64>,
+    pub(super) filter: QueryRecordFilter,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct LatencyQuery {
+    pub(super) since_ms: Option<u64>,
+    pub(super) until_ms: Option<u64>,
+    pub(super) filter: QueryRecordFilter,
+    pub(super) slow_limit: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct TimeseriesQuery {
+    pub(super) since_ms: Option<u64>,
+    pub(super) until_ms: Option<u64>,
+    pub(super) filter: QueryRecordFilter,
+    pub(super) bucket: TimeseriesBucket,
+    pub(super) max_buckets: usize,
+}

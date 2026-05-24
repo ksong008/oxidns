@@ -298,6 +298,72 @@ export interface QueryRecorderPluginStatsResponse {
   stats: QueryRecorderPluginStatsRow[];
 }
 
+export interface QueryRecorderTopRow {
+  key: string;
+  count: number;
+  share: number;
+}
+
+export interface QueryRecorderTopResponse {
+  ok: boolean;
+  sample_size: number;
+  rows: QueryRecorderTopRow[];
+}
+
+export interface QueryRecorderDistributionRow {
+  key: string;
+  count: number;
+  share: number;
+}
+
+export interface QueryRecorderDistributionResponse {
+  ok: boolean;
+  sample_size: number;
+  rows: QueryRecorderDistributionRow[];
+}
+
+export interface QueryRecorderLatencyHistogramBucket {
+  lt_ms: number | null;
+  count: number;
+}
+
+export interface QueryRecorderLatencySlowRow {
+  qname: string;
+  count: number;
+  avg_ms: number;
+  max_ms: number;
+}
+
+export interface QueryRecorderLatencySummary {
+  ok: boolean;
+  sample_size: number;
+  avg_ms: number;
+  p50_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+  max_ms: number;
+  histogram: QueryRecorderLatencyHistogramBucket[];
+  slow_top: QueryRecorderLatencySlowRow[];
+}
+
+export type QueryRecorderTimeseriesBucket = "minute" | "hour";
+
+export interface QueryRecorderTimeseriesPoint {
+  bucket_ms: number;
+  total: number;
+  error_count: number;
+  no_response_count: number;
+  avg_ms: number;
+  p95_ms: number;
+}
+
+export interface QueryRecorderTimeseriesResponse {
+  ok: boolean;
+  sample_size: number;
+  bucket_ms: number;
+  points: QueryRecorderTimeseriesPoint[];
+}
+
 export async function fetchConfigFile(): Promise<ConfigFileResponse> {
   const response = await fetch(apiUrl("/config"), {
     method: "GET",
@@ -473,6 +539,7 @@ export async function fetchQueryRecords(
   options: QueryRecordFilters & {
     limit?: number;
     cursor?: string;
+    signal?: AbortSignal;
   } = {},
 ): Promise<QueryRecordsResponse> {
   const params = new URLSearchParams();
@@ -482,7 +549,7 @@ export async function fetchQueryRecords(
   const suffix = params.toString() ? `?${params.toString()}` : "";
   const response = await fetch(
     apiUrl(`/plugins/${encodeURIComponent(tag)}/records${suffix}`),
-    { method: "GET", headers: apiHeaders() },
+    { method: "GET", headers: apiHeaders(), signal: options.signal },
   );
   return readJsonResponse<QueryRecordsResponse>(response);
 }
@@ -491,6 +558,7 @@ export async function fetchQueryRecorderPluginStats(
   tag: string,
   options: QueryRecordFilters & {
     kind?: QueryRecorderPluginStatsKind;
+    signal?: AbortSignal;
   } = {},
 ): Promise<QueryRecorderPluginStatsResponse> {
   const params = new URLSearchParams();
@@ -499,7 +567,7 @@ export async function fetchQueryRecorderPluginStats(
   const suffix = params.toString() ? `?${params.toString()}` : "";
   const response = await fetch(
     apiUrl(`/plugins/${encodeURIComponent(tag)}/stats/plugins${suffix}`),
-    { method: "GET", headers: apiHeaders() },
+    { method: "GET", headers: apiHeaders(), signal: options.signal },
   );
   return readJsonResponse<QueryRecorderPluginStatsResponse>(response);
 }
@@ -513,6 +581,98 @@ export async function fetchQueryRecordDetail(
     { method: "GET", headers: apiHeaders() },
   );
   return readJsonResponse<QueryRecordDetailResponse>(response);
+}
+
+export async function fetchQueryRecorderTopClients(
+  tag: string,
+  options: QueryRecordFilters & { limit?: number } = {},
+): Promise<QueryRecorderTopResponse> {
+  const params = new URLSearchParams();
+  if (options.limit) params.set("limit", String(options.limit));
+  appendQueryRecordFilters(params, options);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/stats/top_clients${suffix}`),
+    { method: "GET", headers: apiHeaders() },
+  );
+  return readJsonResponse<QueryRecorderTopResponse>(response);
+}
+
+export async function fetchQueryRecorderTopQnames(
+  tag: string,
+  options: QueryRecordFilters & { limit?: number } = {},
+): Promise<QueryRecorderTopResponse> {
+  const params = new URLSearchParams();
+  if (options.limit) params.set("limit", String(options.limit));
+  appendQueryRecordFilters(params, options);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/stats/top_qnames${suffix}`),
+    { method: "GET", headers: apiHeaders() },
+  );
+  return readJsonResponse<QueryRecorderTopResponse>(response);
+}
+
+export async function fetchQueryRecorderQtypeDistribution(
+  tag: string,
+  options: QueryRecordFilters = {},
+): Promise<QueryRecorderDistributionResponse> {
+  const params = new URLSearchParams();
+  appendQueryRecordFilters(params, options);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/stats/qtype${suffix}`),
+    { method: "GET", headers: apiHeaders() },
+  );
+  return readJsonResponse<QueryRecorderDistributionResponse>(response);
+}
+
+export async function fetchQueryRecorderRcodeDistribution(
+  tag: string,
+  options: QueryRecordFilters = {},
+): Promise<QueryRecorderDistributionResponse> {
+  const params = new URLSearchParams();
+  appendQueryRecordFilters(params, options);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/stats/rcode${suffix}`),
+    { method: "GET", headers: apiHeaders() },
+  );
+  return readJsonResponse<QueryRecorderDistributionResponse>(response);
+}
+
+export async function fetchQueryRecorderLatency(
+  tag: string,
+  options: QueryRecordFilters & { slowLimit?: number } = {},
+): Promise<QueryRecorderLatencySummary> {
+  const params = new URLSearchParams();
+  if (options.slowLimit) params.set("slow_limit", String(options.slowLimit));
+  appendQueryRecordFilters(params, options);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/stats/latency${suffix}`),
+    { method: "GET", headers: apiHeaders() },
+  );
+  return readJsonResponse<QueryRecorderLatencySummary>(response);
+}
+
+export async function fetchQueryRecorderTimeseries(
+  tag: string,
+  options: QueryRecordFilters & {
+    bucket?: QueryRecorderTimeseriesBucket;
+    buckets?: number;
+  } = {},
+): Promise<QueryRecorderTimeseriesResponse> {
+  const params = new URLSearchParams();
+  if (options.bucket) params.set("bucket", options.bucket);
+  if (options.buckets) params.set("buckets", String(options.buckets));
+  appendQueryRecordFilters(params, options);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/stats/timeseries${suffix}`),
+    { method: "GET", headers: apiHeaders() },
+  );
+  return readJsonResponse<QueryRecorderTimeseriesResponse>(response);
 }
 
 // --- Log API ---

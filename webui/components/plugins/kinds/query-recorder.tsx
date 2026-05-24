@@ -1,8 +1,37 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { BarChart3, Filter, Info, Radio, RefreshCw, X } from "lucide-react";
+import {
+  BarChart3,
+  Filter,
+  Globe,
+  Info,
+  Loader2,
+  PieChart as PieChartIcon,
+  Radio,
+  RefreshCw,
+  ServerCrash,
+  Timer,
+  TrendingUp,
+  Users,
+  X,
+} from "lucide-react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip as RechartsTooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,17 +57,29 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   apiHeaders,
   apiUrl,
   fetchQueryRecordDetail,
-  fetchQueryRecords,
+  fetchQueryRecorderLatency,
   fetchQueryRecorderPluginStats,
+  fetchQueryRecorderQtypeDistribution,
+  fetchQueryRecorderRcodeDistribution,
+  fetchQueryRecorderTimeseries,
+  fetchQueryRecorderTopClients,
+  fetchQueryRecorderTopQnames,
+  fetchQueryRecords,
   type QueryRecordDetail,
   type QueryRecordFilters,
   type QueryRecordRow,
   type QueryRecordStatusFilter,
+  type QueryRecorderDistributionResponse,
+  type QueryRecorderLatencySummary,
   type QueryRecorderPluginStatsRow,
+  type QueryRecorderTimeseriesBucket,
+  type QueryRecorderTimeseriesResponse,
+  type QueryRecorderTopResponse,
 } from "@/lib/oxidns-api";
 import { useAppStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -67,6 +108,14 @@ function QueryRecorderDetail(props: PluginDetailComponentProps) {
         },
       ]}
       metricsContent={<QueryRecordsPanel tag={props.plugin.name} />}
+      extraTabs={[
+        {
+          value: "insights",
+          icon: <BarChart3 className="mr-1 h-3.5 w-3.5" />,
+          label: "聚合",
+          content: <QueryRecorderInsightsPanel tag={props.plugin.name} />,
+        },
+      ]}
     />
   );
 }
@@ -117,6 +166,19 @@ const RCODE_OPTIONS = [
   "Not Implemented",
 ];
 
+const CHART_COLORS = [
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+];
+
+// ---------------------------------------------------------------------------
+// 「统计」Tab — original layout: MatcherStatsCard on top, QueryRecordsPanel
+// below, sharing a single filter form (incl. matcherTag).
+// ---------------------------------------------------------------------------
+
 function QueryRecordsPanel({ tag }: { tag: string }) {
   const [records, setRecords] = useState<QueryRecordRow[]>([]);
   const [nextCursor, setNextCursor] = useState<string | undefined>();
@@ -134,7 +196,13 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statsError, setStatsError] = useState<string | null>(null);
+  // SSE controller (existing behavior).
   const abortRef = useRef<AbortController | null>(null);
+  // Cancel the previous /records load when a new one starts (e.g. rapid
+  // matcher-click). Without this each click piles a new SQL query onto the
+  // blocking pool while the previous one is still running.
+  const recordsAbortRef = useRef<AbortController | null>(null);
+  const statsAbortRef = useRef<AbortController | null>(null);
   const filtersRef = useRef<QueryRecordFilters>({});
 
   useEffect(() => {
@@ -143,6 +211,9 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
 
   const loadRecords = useCallback(
     async (filters: QueryRecordFilters, cursor?: string) => {
+      recordsAbortRef.current?.abort();
+      const controller = new AbortController();
+      recordsAbortRef.current = controller;
       setLoading(true);
       setError(null);
       try {
@@ -150,15 +221,21 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
           limit: 100,
           cursor,
           ...filters,
+          signal: controller.signal,
         });
+        if (controller.signal.aborted) return;
         setRecords((current) =>
           cursor ? [...current, ...response.records] : response.records,
         );
         setNextCursor(response.next_cursor);
       } catch (err) {
+        if (controller.signal.aborted) return;
         setError(err instanceof Error ? err.message : "读取查询记录失败");
       } finally {
-        setLoading(false);
+        if (recordsAbortRef.current === controller) {
+          recordsAbortRef.current = null;
+          setLoading(false);
+        }
       }
     },
     [tag],
@@ -166,6 +243,9 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
 
   const loadMatcherStats = useCallback(
     async (filters: QueryRecordFilters) => {
+      statsAbortRef.current?.abort();
+      const controller = new AbortController();
+      statsAbortRef.current = controller;
       setStatsLoading(true);
       setStatsError(null);
       try {
@@ -173,15 +253,21 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
           kind: "matcher",
           ...filters,
           matcherTag: undefined,
+          signal: controller.signal,
         });
+        if (controller.signal.aborted) return;
         setMatcherStats(response.stats.filter((row) => row.kind === "matcher"));
         setStatsQueryTotal(response.query_total);
       } catch (err) {
+        if (controller.signal.aborted) return;
         setStatsError(
           err instanceof Error ? err.message : "读取 matcher 命中率失败",
         );
       } finally {
-        setStatsLoading(false);
+        if (statsAbortRef.current === controller) {
+          statsAbortRef.current = null;
+          setStatsLoading(false);
+        }
       }
     },
     [tag],
@@ -205,6 +291,8 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
     return () => {
       window.clearTimeout(timer);
       abortRef.current?.abort();
+      recordsAbortRef.current?.abort();
+      statsAbortRef.current?.abort();
     };
   }, [loadMatcherStats, loadRecords]);
 
@@ -296,6 +384,7 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
         stats={matcherStats}
         queryTotal={statsQueryTotal}
         loading={statsLoading}
+        recordsLoading={loading}
         error={statsError}
         selectedMatcher={appliedFilters.matcherTag}
         onSelectMatcher={(matcherTag) => {
@@ -324,6 +413,12 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
               <span className="rounded-full border bg-muted/30 px-2 py-0.5">
                 错误 {records.filter((record) => record.error).length} 条
               </span>
+              {loading && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-primary">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  正在加载…
+                </span>
+              )}
               {streaming && (
                 <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-primary">
                   实时接收中
@@ -494,7 +589,19 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
               {error}
             </div>
           )}
-          <div className="overflow-hidden rounded-md border">
+          <div className="relative overflow-hidden rounded-md border">
+            {loading && (
+              <div
+                className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-background/60 backdrop-blur-[1px]"
+                aria-live="polite"
+                role="status"
+              >
+                <div className="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-background/95 px-3 py-1.5 text-xs text-primary shadow-sm">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  正在加载查询记录…
+                </div>
+              </div>
+            )}
             <Table className="min-w-[760px]">
               <TableHeader>
                 <TableRow className="bg-muted/30 hover:bg-muted/30">
@@ -615,6 +722,7 @@ function MatcherStatsCard({
   stats,
   queryTotal,
   loading,
+  recordsLoading,
   error,
   selectedMatcher,
   onSelectMatcher,
@@ -623,6 +731,12 @@ function MatcherStatsCard({
   stats: QueryRecorderPluginStatsRow[];
   queryTotal: number;
   loading: boolean;
+  /**
+   * Records list is currently fetching — typically because the user just
+   * clicked this matcher row. Surfaces a spinner on the selected row so the
+   * click feels responsive even before /records returns.
+   */
+  recordsLoading: boolean;
   error: string | null;
   selectedMatcher?: string;
   onSelectMatcher: (matcherTag: string | undefined) => void;
@@ -698,8 +812,7 @@ function MatcherStatsCard({
                     }
                     onClick={
                       selectable
-                        ? () =>
-                            onSelectMatcher(isSelected ? undefined : tag)
+                        ? () => onSelectMatcher(isSelected ? undefined : tag)
                         : undefined
                     }
                     title={
@@ -714,8 +827,14 @@ function MatcherStatsCard({
                       <div className="flex items-center gap-2">
                         <span>{tag ?? "(unknown)"}</span>
                         {isSelected && (
-                          <Badge variant="secondary" className="font-mono">
-                            已选
+                          <Badge
+                            variant="secondary"
+                            className="inline-flex items-center gap-1 font-mono"
+                          >
+                            {recordsLoading && (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            )}
+                            {recordsLoading ? "加载中" : "已选"}
                           </Badge>
                         )}
                       </div>
@@ -746,6 +865,943 @@ function MatcherStatsCard({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 「聚合」Tab — top-level aggregate insights. Independent from the 统计 Tab's
+// filter form. Only knob is a preset time range; sub-tabs render charts.
+// ---------------------------------------------------------------------------
+
+type InsightsRangeKey = "10m" | "1h" | "24h" | "all";
+
+const RANGE_PRESETS: Array<{ key: InsightsRangeKey; label: string }> = [
+  { key: "10m", label: "最近 10 分钟" },
+  { key: "1h", label: "最近 1 小时" },
+  { key: "24h", label: "最近 24 小时" },
+  { key: "all", label: "全部" },
+];
+
+function rangeToFilters(range: InsightsRangeKey): QueryRecordFilters {
+  if (range === "all") return {};
+  const now = Date.now();
+  const minutes = range === "10m" ? 10 : range === "1h" ? 60 : 24 * 60;
+  return { sinceMs: now - minutes * 60_000, untilMs: now };
+}
+
+function defaultBucketForRange(
+  range: InsightsRangeKey,
+): QueryRecorderTimeseriesBucket {
+  return range === "24h" || range === "all" ? "hour" : "minute";
+}
+
+function QueryRecorderInsightsPanel({ tag }: { tag: string }) {
+  const [range, setRange] = useState<InsightsRangeKey>("1h");
+  // `nonce` lets the user force a refresh of every sub-tab without changing
+  // the range; we bump it on the toolbar refresh button.
+  const [nonce, setNonce] = useState(0);
+  const filters = useMemo(() => rangeToFilters(range), [range]);
+  const rangeLabel = useMemo(
+    () => RANGE_PRESETS.find((preset) => preset.key === range)?.label ?? "",
+    [range],
+  );
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader className="grid gap-3 p-4 pb-2 sm:grid-cols-[1fr_auto] sm:items-center">
+          <div className="min-w-0">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <BarChart3 className="h-4 w-4 text-primary" />
+              聚合视图
+            </CardTitle>
+            <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+              <span className="rounded-full border bg-muted/30 px-2 py-0.5">
+                {rangeLabel}
+              </span>
+              <span className="rounded-full border bg-muted/30 px-2 py-0.5">
+                与「统计」Tab 筛选相互独立
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <PresetRangePicker value={range} onChange={setRange} />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setNonce((value) => value + 1)}
+            >
+              <RefreshCw className="h-4 w-4" />
+              刷新
+            </Button>
+          </div>
+        </CardHeader>
+      </Card>
+
+      <Tabs defaultValue="clients">
+        <TabsList className="flex w-full flex-wrap justify-start gap-1 overflow-x-auto">
+          <TabsTrigger value="clients">
+            <Users className="h-3.5 w-3.5" />
+            客户端
+          </TabsTrigger>
+          <TabsTrigger value="qnames">
+            <Globe className="h-3.5 w-3.5" />
+            域名
+          </TabsTrigger>
+          <TabsTrigger value="qtype">
+            <BarChart3 className="h-3.5 w-3.5" />
+            QTYPE
+          </TabsTrigger>
+          <TabsTrigger value="rcode">
+            <PieChartIcon className="h-3.5 w-3.5" />
+            RCODE
+          </TabsTrigger>
+          <TabsTrigger value="latency">
+            <Timer className="h-3.5 w-3.5" />
+            延迟
+          </TabsTrigger>
+          <TabsTrigger value="timeseries">
+            <TrendingUp className="h-3.5 w-3.5" />
+            趋势
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="clients">
+          <TopBucketsCard
+            key={`clients-${nonce}`}
+            title="客户端 IP 排行"
+            icon={<Users className="h-4 w-4 text-primary" />}
+            tag={tag}
+            filters={filters}
+            fetcher={fetchQueryRecorderTopClients}
+            keyLabel="客户端 IP"
+          />
+        </TabsContent>
+        <TabsContent value="qnames">
+          <TopBucketsCard
+            key={`qnames-${nonce}`}
+            title="查询域名排行"
+            icon={<Globe className="h-4 w-4 text-primary" />}
+            tag={tag}
+            filters={filters}
+            fetcher={fetchQueryRecorderTopQnames}
+            keyLabel="QNAME"
+          />
+        </TabsContent>
+        <TabsContent value="qtype">
+          <DistributionCard
+            key={`qtype-${nonce}`}
+            title="QTYPE 分布"
+            icon={<BarChart3 className="h-4 w-4 text-primary" />}
+            tag={tag}
+            filters={filters}
+            fetcher={fetchQueryRecorderQtypeDistribution}
+            keyLabel="QTYPE"
+            preferBarChart
+          />
+        </TabsContent>
+        <TabsContent value="rcode">
+          <DistributionCard
+            key={`rcode-${nonce}`}
+            title="RCODE 分布"
+            icon={<PieChartIcon className="h-4 w-4 text-primary" />}
+            tag={tag}
+            filters={filters}
+            fetcher={fetchQueryRecorderRcodeDistribution}
+            keyLabel="RCODE"
+            preferBarChart={false}
+          />
+        </TabsContent>
+        <TabsContent value="latency">
+          <LatencyCard key={`latency-${nonce}`} tag={tag} filters={filters} />
+        </TabsContent>
+        <TabsContent value="timeseries">
+          <TimeseriesCard
+            key={`timeseries-${nonce}-${range}`}
+            tag={tag}
+            filters={filters}
+            defaultBucket={defaultBucketForRange(range)}
+          />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function PresetRangePicker({
+  value,
+  onChange,
+}: {
+  value: InsightsRangeKey;
+  onChange: (next: InsightsRangeKey) => void;
+}) {
+  return (
+    <div className="inline-flex h-8 items-center rounded-md border bg-muted/30 p-0.5">
+      {RANGE_PRESETS.map((preset) => {
+        const active = preset.key === value;
+        return (
+          <button
+            key={preset.key}
+            type="button"
+            onClick={() => onChange(preset.key)}
+            className={cn(
+              "rounded px-2 py-1 text-xs transition-colors",
+              active
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {preset.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function TopBucketsCard({
+  title,
+  icon,
+  tag,
+  filters,
+  fetcher,
+  keyLabel,
+}: {
+  title: string;
+  icon: ReactNode;
+  tag: string;
+  filters: QueryRecordFilters;
+  fetcher: (
+    tag: string,
+    options: QueryRecordFilters & { limit?: number },
+  ) => Promise<QueryRecorderTopResponse>;
+  keyLabel: string;
+}) {
+  const [data, setData] = useState<QueryRecorderTopResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetcher(tag, { ...filters, limit: 20 });
+      setData(response);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "读取统计失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [tag, filters, fetcher]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void load();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  const chartData = useMemo(
+    () =>
+      (data?.rows ?? []).slice().map((row) => ({
+        key: row.key,
+        count: row.count,
+        share: row.share,
+      })),
+    [data],
+  );
+
+  return (
+    <Card className="mt-3">
+      <CardHeader className="grid gap-3 p-4 pb-2 sm:grid-cols-[1fr_auto] sm:items-center">
+        <div className="min-w-0">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            {icon}
+            {title}
+          </CardTitle>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+            <span className="rounded-full border bg-muted/30 px-2 py-0.5">
+              样本 {data?.sample_size ?? 0} 条
+            </span>
+            <span className="rounded-full border bg-muted/30 px-2 py-0.5">
+              Top {chartData.length}
+            </span>
+          </div>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={loading}
+          onClick={() => void load()}
+        >
+          <RefreshCw className="h-4 w-4" />
+          刷新
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-4 p-4 pt-0">
+        {error && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+        {chartData.length > 0 && (
+          <div className="h-[360px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={chartData}
+                layout="vertical"
+                margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
+              >
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  stroke="var(--border)"
+                  horizontal={false}
+                />
+                <XAxis
+                  type="number"
+                  stroke="var(--muted-foreground)"
+                  fontSize={11}
+                  allowDecimals={false}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="key"
+                  stroke="var(--muted-foreground)"
+                  fontSize={11}
+                  width={180}
+                  tickFormatter={(value: string) => truncateMiddle(value, 28)}
+                />
+                <RechartsTooltip
+                  cursor={{ fill: "var(--muted)", opacity: 0.3 }}
+                  contentStyle={{
+                    background: "var(--popover)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    color: "var(--foreground)",
+                    fontSize: 12,
+                  }}
+                  formatter={(value: number, _name, props) => [
+                    `${value} 次 (${formatPercent(
+                      (props.payload?.share as number) ?? 0,
+                    )})`,
+                    keyLabel,
+                  ]}
+                />
+                <Bar
+                  dataKey="count"
+                  fill="var(--chart-1)"
+                  radius={[0, 4, 4, 0]}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+        <div className="overflow-hidden rounded-md border">
+          <Table className="min-w-[560px]">
+            <TableHeader>
+              <TableRow className="bg-muted/30 hover:bg-muted/30">
+                <TableHead className="w-12">#</TableHead>
+                <TableHead>{keyLabel}</TableHead>
+                <TableHead>次数</TableHead>
+                <TableHead>占比</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {chartData.map((row, index) => (
+                <TableRow key={row.key}>
+                  <TableCell className="font-mono text-xs text-muted-foreground">
+                    {index + 1}
+                  </TableCell>
+                  <TableCell className="font-mono">{row.key}</TableCell>
+                  <TableCell className="font-mono">{row.count}</TableCell>
+                  <TableCell className="font-mono">
+                    {formatPercent(row.share)}
+                  </TableCell>
+                </TableRow>
+              ))}
+              {!chartData.length && (
+                <TableRow>
+                  <TableCell
+                    colSpan={4}
+                    className="h-20 text-center text-muted-foreground"
+                  >
+                    {loading ? "正在读取统计..." : "暂无数据"}
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function DistributionCard({
+  title,
+  icon,
+  tag,
+  filters,
+  fetcher,
+  keyLabel,
+  preferBarChart,
+}: {
+  title: string;
+  icon: ReactNode;
+  tag: string;
+  filters: QueryRecordFilters;
+  fetcher: (
+    tag: string,
+    options: QueryRecordFilters,
+  ) => Promise<QueryRecorderDistributionResponse>;
+  keyLabel: string;
+  preferBarChart: boolean;
+}) {
+  const [data, setData] = useState<QueryRecorderDistributionResponse | null>(
+    null,
+  );
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetcher(tag, filters);
+      setData(response);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "读取分布失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [tag, filters, fetcher]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void load();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  const rows = useMemo(() => data?.rows ?? [], [data]);
+
+  return (
+    <Card className="mt-3">
+      <CardHeader className="grid gap-3 p-4 pb-2 sm:grid-cols-[1fr_auto] sm:items-center">
+        <div className="min-w-0">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            {icon}
+            {title}
+          </CardTitle>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+            <span className="rounded-full border bg-muted/30 px-2 py-0.5">
+              样本 {data?.sample_size ?? 0} 条
+            </span>
+            <span className="rounded-full border bg-muted/30 px-2 py-0.5">
+              分桶 {rows.length} 个
+            </span>
+          </div>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={loading}
+          onClick={() => void load()}
+        >
+          <RefreshCw className="h-4 w-4" />
+          刷新
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-4 p-4 pt-0">
+        {error && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+        {rows.length > 0 && (
+          <div className="h-[280px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              {preferBarChart ? (
+                <BarChart
+                  data={rows}
+                  margin={{ top: 8, right: 16, left: 0, bottom: 8 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                  <XAxis
+                    dataKey="key"
+                    stroke="var(--muted-foreground)"
+                    fontSize={11}
+                  />
+                  <YAxis
+                    stroke="var(--muted-foreground)"
+                    fontSize={11}
+                    allowDecimals={false}
+                  />
+                  <RechartsTooltip
+                    cursor={{ fill: "var(--muted)", opacity: 0.3 }}
+                    contentStyle={{
+                      background: "var(--popover)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 8,
+                      color: "var(--foreground)",
+                      fontSize: 12,
+                    }}
+                    formatter={(value: number, _name, props) => [
+                      `${value} 次 (${formatPercent(
+                        (props.payload?.share as number) ?? 0,
+                      )})`,
+                      keyLabel,
+                    ]}
+                  />
+                  <Bar
+                    dataKey="count"
+                    fill="var(--chart-1)"
+                    radius={[4, 4, 0, 0]}
+                  />
+                </BarChart>
+              ) : (
+                <PieChart>
+                  <RechartsTooltip
+                    contentStyle={{
+                      background: "var(--popover)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 8,
+                      color: "var(--foreground)",
+                      fontSize: 12,
+                    }}
+                    formatter={(value: number, _name, props) => [
+                      `${value} 次 (${formatPercent(
+                        (props.payload?.share as number) ?? 0,
+                      )})`,
+                      props.payload?.key ?? keyLabel,
+                    ]}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Pie
+                    data={rows}
+                    dataKey="count"
+                    nameKey="key"
+                    outerRadius={90}
+                    innerRadius={42}
+                    paddingAngle={2}
+                  >
+                    {rows.map((entry, index) => (
+                      <Cell
+                        key={entry.key}
+                        fill={CHART_COLORS[index % CHART_COLORS.length]}
+                      />
+                    ))}
+                  </Pie>
+                </PieChart>
+              )}
+            </ResponsiveContainer>
+          </div>
+        )}
+        <div className="overflow-hidden rounded-md border">
+          <Table className="min-w-[480px]">
+            <TableHeader>
+              <TableRow className="bg-muted/30 hover:bg-muted/30">
+                <TableHead>{keyLabel}</TableHead>
+                <TableHead>次数</TableHead>
+                <TableHead>占比</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row) => (
+                <TableRow key={row.key}>
+                  <TableCell className="font-mono">{row.key}</TableCell>
+                  <TableCell className="font-mono">{row.count}</TableCell>
+                  <TableCell className="font-mono">
+                    {formatPercent(row.share)}
+                  </TableCell>
+                </TableRow>
+              ))}
+              {!rows.length && (
+                <TableRow>
+                  <TableCell
+                    colSpan={3}
+                    className="h-20 text-center text-muted-foreground"
+                  >
+                    {loading ? "正在读取分布..." : "暂无数据"}
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function LatencyCard({
+  tag,
+  filters,
+}: {
+  tag: string;
+  filters: QueryRecordFilters;
+}) {
+  const [data, setData] = useState<QueryRecorderLatencySummary | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetchQueryRecorderLatency(tag, {
+        ...filters,
+        slowLimit: 20,
+      });
+      setData(response);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "读取延迟统计失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [tag, filters]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void load();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  const histogram = useMemo(() => {
+    const buckets = data?.histogram ?? [];
+    return buckets.map((bucket, index) => {
+      const prev = index === 0 ? 0 : (buckets[index - 1]?.lt_ms ?? 0);
+      const lt = bucket.lt_ms;
+      const label =
+        lt === null
+          ? `${prev}+ ms`
+          : prev === 0
+            ? `<${lt} ms`
+            : `${prev}–${lt} ms`;
+      // Color bars semantically: green → fast, sky → normal, amber → slow,
+      // rose → very slow — same tiers as queryElapsedClassName.
+      const upperBound = lt ?? Number.POSITIVE_INFINITY;
+      const fill =
+        upperBound <= 20
+          ? "var(--color-emerald-500)"
+          : upperBound <= 100
+            ? "var(--color-sky-500)"
+            : upperBound <= 300
+              ? "var(--color-amber-500)"
+              : "var(--color-rose-500)";
+      return { label, count: bucket.count, fill };
+    });
+  }, [data]);
+
+  return (
+    <Card className="mt-3">
+      <CardHeader className="grid gap-3 p-4 pb-2 sm:grid-cols-[1fr_auto] sm:items-center">
+        <div className="min-w-0">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Timer className="h-4 w-4 text-primary" />
+            延迟分布
+          </CardTitle>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+            <span className="rounded-full border bg-muted/30 px-2 py-0.5">
+              样本 {data?.sample_size ?? 0} 条
+            </span>
+          </div>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={loading}
+          onClick={() => void load()}
+        >
+          <RefreshCw className="h-4 w-4" />
+          刷新
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-4 p-4 pt-0">
+        {error && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+          <MetricChip label="P50" value={`${data?.p50_ms ?? 0} ms`} />
+          <MetricChip label="P95" value={`${data?.p95_ms ?? 0} ms`} />
+          <MetricChip label="P99" value={`${data?.p99_ms ?? 0} ms`} />
+          <MetricChip
+            label="平均"
+            value={`${data ? data.avg_ms.toFixed(1) : "0.0"} ms`}
+          />
+          <MetricChip label="最大" value={`${data?.max_ms ?? 0} ms`} />
+        </div>
+        {histogram.length > 0 && (
+          <div className="h-[260px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={histogram}
+                margin={{ top: 8, right: 16, left: 0, bottom: 8 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis
+                  dataKey="label"
+                  stroke="var(--muted-foreground)"
+                  fontSize={11}
+                />
+                <YAxis
+                  stroke="var(--muted-foreground)"
+                  fontSize={11}
+                  allowDecimals={false}
+                />
+                <RechartsTooltip
+                  cursor={{ fill: "var(--muted)", opacity: 0.3 }}
+                  contentStyle={{
+                    background: "var(--popover)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    color: "var(--foreground)",
+                    fontSize: 12,
+                  }}
+                />
+                <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                  {histogram.map((entry) => (
+                    <Cell key={entry.label} fill={entry.fill} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+        <div>
+          <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+            <ServerCrash className="h-3.5 w-3.5" />
+            慢查询 Top（按平均耗时）
+          </div>
+          <div className="overflow-hidden rounded-md border">
+            <Table className="min-w-[600px]">
+              <TableHeader>
+                <TableRow className="bg-muted/30 hover:bg-muted/30">
+                  <TableHead>QNAME</TableHead>
+                  <TableHead>次数</TableHead>
+                  <TableHead>平均耗时</TableHead>
+                  <TableHead>最大耗时</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(data?.slow_top ?? []).map((row) => (
+                  <TableRow key={row.qname}>
+                    <TableCell className="font-mono">{row.qname}</TableCell>
+                    <TableCell className="font-mono">{row.count}</TableCell>
+                    <TableCell className="font-mono">
+                      {row.avg_ms.toFixed(1)} ms
+                    </TableCell>
+                    <TableCell className="font-mono">{row.max_ms} ms</TableCell>
+                  </TableRow>
+                ))}
+                {!(data?.slow_top ?? []).length && (
+                  <TableRow>
+                    <TableCell
+                      colSpan={4}
+                      className="h-20 text-center text-muted-foreground"
+                    >
+                      {loading ? "正在读取慢查询..." : "暂无数据"}
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function TimeseriesCard({
+  tag,
+  filters,
+  defaultBucket,
+}: {
+  tag: string;
+  filters: QueryRecordFilters;
+  defaultBucket: QueryRecorderTimeseriesBucket;
+}) {
+  const [data, setData] = useState<QueryRecorderTimeseriesResponse | null>(
+    null,
+  );
+  // `defaultBucket` only seeds the initial state. The parent re-keys this
+  // component on range change, so a new range remounts with the new default
+  // while preserving user selection within a single range.
+  const [bucket, setBucket] =
+    useState<QueryRecorderTimeseriesBucket>(defaultBucket);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetchQueryRecorderTimeseries(tag, {
+        ...filters,
+        bucket,
+        buckets: bucket === "minute" ? 60 : 48,
+      });
+      setData(response);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "读取趋势失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [tag, filters, bucket]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void load();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  const points = useMemo(() => {
+    const items = data?.points ?? [];
+    return items.map((point) => ({
+      ...point,
+      label: formatBucketLabel(point.bucket_ms, bucket),
+    }));
+  }, [data, bucket]);
+
+  return (
+    <Card className="mt-3">
+      <CardHeader className="grid gap-3 p-4 pb-2 sm:grid-cols-[1fr_auto] sm:items-center">
+        <div className="min-w-0">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <TrendingUp className="h-4 w-4 text-primary" />
+            查询趋势
+          </CardTitle>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+            <span className="rounded-full border bg-muted/30 px-2 py-0.5">
+              样本 {data?.sample_size ?? 0} 条
+            </span>
+            <span className="rounded-full border bg-muted/30 px-2 py-0.5">
+              桶大小 {bucket === "minute" ? "1 分钟" : "1 小时"}
+            </span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Select
+            value={bucket}
+            onValueChange={(value) =>
+              setBucket(value as QueryRecorderTimeseriesBucket)
+            }
+          >
+            <SelectTrigger className="h-8 w-[110px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="minute">按分钟</SelectItem>
+              <SelectItem value="hour">按小时</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={loading}
+            onClick={() => void load()}
+          >
+            <RefreshCw className="h-4 w-4" />
+            刷新
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4 p-4 pt-0">
+        {error && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+        {points.length > 0 ? (
+          <div className="h-[320px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart
+                data={points}
+                margin={{ top: 8, right: 16, left: 0, bottom: 8 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis
+                  dataKey="label"
+                  stroke="var(--muted-foreground)"
+                  fontSize={11}
+                  minTickGap={20}
+                />
+                <YAxis
+                  yAxisId="left"
+                  stroke="var(--muted-foreground)"
+                  fontSize={11}
+                  allowDecimals={false}
+                />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  stroke="var(--muted-foreground)"
+                  fontSize={11}
+                  allowDecimals={false}
+                />
+                <RechartsTooltip
+                  contentStyle={{
+                    background: "var(--popover)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    color: "var(--foreground)",
+                    fontSize: 12,
+                  }}
+                />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="total"
+                  name="总查询"
+                  stroke="var(--chart-1)"
+                  dot={false}
+                  strokeWidth={2}
+                />
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="error_count"
+                  name="错误数"
+                  stroke="var(--chart-5)"
+                  dot={false}
+                  strokeWidth={2}
+                />
+                <Line
+                  yAxisId="right"
+                  type="monotone"
+                  dataKey="p95_ms"
+                  name="P95 (ms)"
+                  stroke="var(--chart-3)"
+                  dot={false}
+                  strokeWidth={1.5}
+                  strokeDasharray="4 2"
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="rounded-md border bg-muted/20 px-3 py-8 text-center text-sm text-muted-foreground">
+            {loading ? "正在读取趋势..." : "暂无数据"}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function MetricChip({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border bg-muted/20 p-2">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+        {label}
+      </div>
+      <div className="font-mono text-sm">{value}</div>
+    </div>
   );
 }
 
@@ -1040,6 +2096,27 @@ function formatTime(ms: number) {
 
 function formatFullTime(ms: number) {
   return new Date(ms).toLocaleString();
+}
+
+function formatBucketLabel(
+  ms: number,
+  bucket: QueryRecorderTimeseriesBucket,
+) {
+  const date = new Date(ms);
+  if (bucket === "hour") {
+    return date.toLocaleString([], {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+    });
+  }
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function truncateMiddle(value: string, max: number) {
+  if (value.length <= max) return value;
+  const half = Math.max(2, Math.floor((max - 1) / 2));
+  return `${value.slice(0, half)}…${value.slice(value.length - half)}`;
 }
 
 function formatQuestion(record: QueryRecordRow) {
