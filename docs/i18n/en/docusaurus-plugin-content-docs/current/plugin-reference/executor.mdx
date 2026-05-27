@@ -1086,6 +1086,21 @@ Biases dual-stack results toward one address family.
 
 ## `black_hole`
 
+<Admonition type="warning" title="Behavior will be redesigned in a future release">
+
+`black_hole` will be redefined as a **complete interceptor** in a future release:
+
+- A new `mode` field will be introduced (`nxdomain` / `nodata` / `null` / `custom` / `refused`) that covers **every** qtype.
+- The default behavior may switch to `nxdomain` (matching AdGuard Home).
+- `short_circuit` will take effect consistently on every match.
+- The legacy `ips` + `short_circuit` configuration will be mapped to `mode: custom`, preserving backward compatibility.
+
+**Why the redesign**:
+
+The essence of a "black hole" is that **no query can escape it**, yet the current implementation only covers `A` / `AAAA`, positioning the plugin more as a "response synthesizer" than an "interceptor". This diverges from the intuition the name carries and from the consensus of mainstream solutions (Pi-hole / AdGuard Home / Unbound `local-zone` / BIND RPZ). After the redesign, `black_hole` will become an interception primitive with **explicit policy, full qtype coverage, and predictable behavior**.
+
+</Admonition>
+
 ### Purpose
 
 Returns sinkhole IPs directly.

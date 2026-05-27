@@ -10,7 +10,29 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-05
 
 <div className="release-stack">
-   <ReleaseCard version="v1.1.2" badge="Patch Release" date="2026-05-27" defaultOpen>
+   <ReleaseCard version="v1.1.3" badge="Patch Release" date="2026-05-27" defaultOpen>
+       **版本定位**
+
+       - Patch Release，重点修复 Linux `nftset` interval 集合写入被内核以 EINVAL 拒绝的问题、`ipset` 创建集合时 `hashsize` / `maxelem` 字节序错误，并完善 WebUI `query_recorder` 标签列表纵向溢出。同时为 `black_hole` 插件文档加入"行为将在后续版本改造"的预告。本版本不引入破坏性配置变更。
+
+       **主要变更**
+
+       - 修复 `nftset` interval 集合的 ADD / DEL / TEST 编码：ADD / DEL 改为 `nft` 用户态使用的两元素列表形式，解决真实内核以 EINVAL 拒绝写入的问题（issue #127）；TEST 改为仅发送起始 key，交由内核 interval 树判定包含关系。同时修正元素 timeout 的字节序，并放宽 dump 解析对孤立 `INTERVAL_END` 锚点的容错。
+       - 修复 `ipset` 创建集合时 `hashsize` / `maxelem` 以本机字节序写入的问题：小端主机上 `hashsize=2048` 会被内核读成 `524288`。同时移除多余的 `IPSET_ATTR_LINENO=0` 嵌套属性，与 libipset 行为对齐。
+       - 大幅扩充 `ripset` 报文格式单元测试与 ipset 集成测试覆盖。
+       - 修复 WebUI `query_recorder` 详情面板长内容时标签栏纵向溢出。
+       - 文档：在 `black_hole` 执行器章节加入醒目提示，说明后续版本将引入 `mode` 字段（`nxdomain` / `nodata` / `null` / `custom` / `refused`）以覆盖所有 qtype，并解释重设计的动机；现版本行为保持不变。
+
+       **配置与升级说明**
+
+       - 根 crate 版本号升级为 `1.1.3`；`oxidns-ripset` 同步升级到 `0.1.2`；release tag 应使用 `v1.1.3`。
+       - `v1.1.2` 配置可直接升级到 `v1.1.3`，未引入新的必填配置字段。
+       - 在 Linux 上使用 `nftset` 插件、且集合声明了 `flags interval` 的部署强烈建议升级，否则 ADD / DEL 会在真实内核上以 EINVAL 失败。
+       - 在 Linux 上通过 OxiDNS 创建 `ipset` 集合并显式设置 `hashsize` / `maxelem` 的部署强烈建议升级；如果集合由外部 `ipset` CLI 预先创建，本次修复不影响已存在的集合。
+       - `black_hole` 当前行为未变化，但建议关注后续版本的语义重设计；现阶段用于域名级拦截时推荐显式同时配置 IPv4 与 IPv6 兜底地址（如 `black_hole 0.0.0.0 :: short_circuit`），或改用 `reject 3`。
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.1.2" badge="Patch Release" date="2026-05-27">
        **版本定位**
 
        - Patch Release，重点修复 Linux `nftset` 在 `flags interval` 集合上的写入失败、Windows 服务安装脚本问题，并完善 systemd 部署的工作目录语义、WebUI 运行日志与 `query_recorder` 排行查看体验。本版本不引入破坏性配置变更。

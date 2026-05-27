@@ -1040,7 +1040,7 @@ function QueryRecorderInsightsPanel({ tag }: { tag: string }) {
       </Card>
 
       <Tabs defaultValue="clients">
-        <TabsList className="flex w-full flex-nowrap justify-start gap-1 overflow-x-auto">
+        <TabsList className="flex w-full flex-nowrap justify-start gap-1 overflow-x-auto overflow-y-hidden">
           <TabsTrigger value="clients" className="shrink-0">
             <Users className="h-3.5 w-3.5" />
             客户端

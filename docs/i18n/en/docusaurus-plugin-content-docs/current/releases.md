@@ -10,7 +10,29 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-05
 
 <div className="release-stack">
-   <ReleaseCard version="v1.1.2" badge="Patch Release" date="2026-05-27" defaultOpen>
+   <ReleaseCard version="v1.1.3" badge="Patch Release" date="2026-05-27" defaultOpen>
+       **Release Scope**
+
+       - Patch Release fixing a Linux `nftset` interval-set ADD/DEL that was rejected by real kernels with EINVAL, an `ipset` byte-order bug in `hashsize` / `maxelem`, and a WebUI `query_recorder` tabs overflow. Also adds an upfront notice on the `black_hole` plugin documentation describing an upcoming behavior redesign. This release does not introduce breaking configuration changes.
+
+       **Changes**
+
+       - Fixed `nftset` ADD / DEL / TEST encoding on interval sets: ADD / DEL now send the two-element list form `nft` userspace uses, resolving the EINVAL rejection observed on real kernels (issue #127); TEST sends only the start key and lets the kernel's interval tree resolve containment. Also fixed the per-element timeout byte order and relaxed dump parsing to tolerate unpaired `INTERVAL_END` anchors.
+       - Fixed `ipset` create writing `hashsize` / `maxelem` in native byte order: on little-endian hosts the kernel would read `hashsize=2048` as `524288`. Also removed the stray `IPSET_ATTR_LINENO=0` nested attribute, aligning with libipset.
+       - Significantly expanded `ripset` wire-format unit and ipset integration test coverage.
+       - Fixed a vertical overflow in the WebUI `query_recorder` detail panel tabs list.
+       - Docs: added a prominent notice to the `black_hole` executor section announcing the upcoming `mode` field (`nxdomain` / `nodata` / `null` / `custom` / `refused`) that will cover every qtype, and explaining the motivation; current behavior is unchanged.
+
+       **Compatibility and Upgrade Notes**
+
+       - Root crate version bumped to `1.1.3`; `oxidns-ripset` bumped to `0.1.2`; release tag should use `v1.1.3`.
+       - `v1.1.2` configs upgrade directly to `v1.1.3` with no new required fields.
+       - Linux deployments using the `nftset` plugin against `flags interval` sets should upgrade promptly; without this fix, ADD / DEL is rejected by real kernels with EINVAL.
+       - Linux deployments that let OxiDNS create `ipset` sets with explicit `hashsize` / `maxelem` should upgrade; sets pre-created by the external `ipset` CLI are unaffected by this fix.
+       - `black_hole` behavior is unchanged in this release, but the upcoming semantic redesign is worth tracking. For domain-level blocking today, prefer configuring both IPv4 and IPv6 fallback addresses (e.g. `black_hole 0.0.0.0 :: short_circuit`) or use `reject 3`.
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.1.2" badge="Patch Release" date="2026-05-27">
        **Release Scope**
 
        - Patch Release fixing a Linux `nftset` write failure on `flags interval` sets, repairing the Windows service installer, and polishing systemd working-directory semantics, the WebUI run log viewer, and `query_recorder` ranking views. This release does not introduce breaking configuration changes.

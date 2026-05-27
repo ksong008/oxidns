@@ -33,6 +33,9 @@ pub mod ipset;
 #[cfg(target_os = "linux")]
 pub mod nftset;
 
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) mod test_util;
+
 // Stub implementations for non-Linux platforms
 #[cfg(not(target_os = "linux"))]
 mod stub;
@@ -471,5 +474,122 @@ mod tests {
     fn converts_network_range_back_to_cidr() {
         let target = range_to_target("10.0.0.0".parse().unwrap(), "10.0.1.0".parse().ok()).unwrap();
         assert_eq!(target, IpTarget::Cidr("10.0.0.0/24".parse().unwrap()));
+    }
+
+    /// Boundary: `/32` on IPv4 must build successfully and the
+    /// exclusive end must be `IP + 1`. This is the dominant case in
+    /// OxiDNS (single A record → /32 add). Catches regressions in
+    /// `ip_after_last` for the maximum prefix length.
+    #[test]
+    fn ipv4_slash32_range_is_single_address() {
+        let cidr: IpCidr = "1.2.3.4/32".parse().unwrap();
+        assert_eq!(cidr.network, "1.2.3.4".parse::<IpAddr>().unwrap());
+        assert_eq!(cidr.prefix_len, 32);
+        assert_eq!(
+            cidr.range_end_exclusive(),
+            Some("1.2.3.5".parse::<IpAddr>().unwrap())
+        );
+    }
+
+    /// Boundary: `/0` on IPv4 must yield network 0.0.0.0 and `None`
+    /// for `range_end_exclusive` (a /0 covers the whole address space,
+    /// so end == 2^32 overflows u32).
+    #[test]
+    fn ipv4_slash0_has_no_exclusive_end() {
+        let cidr = IpCidr::new("1.2.3.4".parse().unwrap(), 0).unwrap();
+        assert_eq!(cidr.network, "0.0.0.0".parse::<IpAddr>().unwrap());
+        assert_eq!(cidr.range_end_exclusive(), None);
+    }
+
+    /// Boundary: top of the v4 space. `255.255.255.255/32`
+    /// range_end_exclusive overflows; `range_end_exclusive()` must
+    /// return None rather than wrapping to 0.0.0.0.
+    #[test]
+    fn ipv4_broadcast_slash32_end_is_none() {
+        let cidr = IpCidr::new("255.255.255.255".parse().unwrap(), 32).unwrap();
+        assert_eq!(cidr.range_end_exclusive(), None);
+    }
+
+    /// Mid-range network normalization: host bits must be cleared on
+    /// construction so two callers passing different host values for
+    /// the same network compare equal.
+    #[test]
+    fn ipv4_cidr_normalizes_host_bits_consistently() {
+        let a = IpCidr::new("192.168.1.10".parse().unwrap(), 24).unwrap();
+        let b = IpCidr::new("192.168.1.250".parse().unwrap(), 24).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.network, "192.168.1.0".parse::<IpAddr>().unwrap());
+    }
+
+    /// IPv6 /128 single-host range.
+    #[test]
+    fn ipv6_slash128_range_is_single_address() {
+        let cidr: IpCidr = "2001:db8::1/128".parse().unwrap();
+        assert_eq!(
+            cidr.range_end_exclusive(),
+            Some("2001:db8::2".parse::<IpAddr>().unwrap())
+        );
+    }
+
+    /// IPv6 max prefix rejection.
+    #[test]
+    fn ipv6_rejects_prefix_over_128() {
+        assert!(matches!(
+            IpCidr::new("2001:db8::1".parse().unwrap(), 129),
+            Err(IpSetError::InvalidCidr(_))
+        ));
+    }
+
+    /// `IpTarget::range_end_exclusive` for a bare IPv4 address must be
+    /// `addr + 1`, used by the nftset interval path when a single host
+    /// is added to a `flags interval` set.
+    #[test]
+    fn ip_target_addr_range_end_is_increment() {
+        let t = IpTarget::Addr("1.2.3.4".parse().unwrap());
+        assert_eq!(
+            t.range_end_exclusive(),
+            Some("1.2.3.5".parse::<IpAddr>().unwrap())
+        );
+    }
+
+    /// `IpTarget::range_end_exclusive` for the top of v4 returns None.
+    /// Mirrors `ipv4_broadcast_slash32_end_is_none` at the higher
+    /// `IpTarget` API layer.
+    #[test]
+    fn ip_target_addr_range_end_at_broadcast_is_none() {
+        let t = IpTarget::Addr("255.255.255.255".parse().unwrap());
+        assert_eq!(t.range_end_exclusive(), None);
+    }
+
+    /// Mixed-family `range_to_target` must error rather than silently
+    /// producing a nonsense target.
+    #[test]
+    fn range_to_target_mixed_family_is_error() {
+        let res = range_to_target(
+            "1.2.3.4".parse().unwrap(),
+            "2001:db8::1".parse::<IpAddr>().ok(),
+        );
+        assert!(matches!(res, Err(IpSetError::ProtocolError)));
+    }
+
+    /// Non-power-of-two range (e.g. start=10.0.0.0 end=10.0.0.3) is
+    /// not expressible as a CIDR; `range_to_target` must reject it.
+    #[test]
+    fn range_to_target_rejects_non_cidr_range() {
+        let res = range_to_target(
+            "10.0.0.0".parse().unwrap(),
+            "10.0.0.3".parse::<IpAddr>().ok(),
+        );
+        assert!(matches!(res, Err(IpSetError::ProtocolError)));
+    }
+
+    /// `IpCidr::contains` must be exact about family — an IPv4 CIDR
+    /// can't contain an IPv6 address, and vice versa.
+    #[test]
+    fn cidr_contains_respects_family() {
+        let v4: IpCidr = "10.0.0.0/24".parse().unwrap();
+        assert!(v4.contains("10.0.0.42".parse().unwrap()));
+        assert!(!v4.contains("10.0.1.0".parse().unwrap()));
+        assert!(!v4.contains("2001:db8::1".parse().unwrap()));
     }
 }

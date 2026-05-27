@@ -1157,6 +1157,21 @@ old-static.example.com static.example.net
 
 ## `black_hole`
 
+<Admonition type="warning" title="行为将在后续版本中改造">
+
+`black_hole` 的语义将在后续版本中被重新定义为**"完整拦截器"**：
+
+- 引入 `mode` 字段（`nxdomain` / `nodata` / `null` / `custom` / `refused`），覆盖**所有** qtype
+- 默认行为可能调整为 `nxdomain`（与 AdGuard Home 一致）
+- `short_circuit` 在任何命中场景下都将一致生效
+- 旧的 `ips` + `short_circuit` 配置将映射为 `mode: custom`，保持向后兼容
+
+**为什么要改造**：
+
+"black hole（黑洞）"的语义本质是**任何查询进来都无法逃逸**，而当前实现仅覆盖 `A` / `AAAA` 两种 qtype，定位更像是"应答合成器"而非"拦截器"。这与名字承载的直觉、与主流方案（Pi-hole / AdGuard Home / Unbound `local-zone` / BIND RPZ）的共识都存在偏差。重新定义后，`black_hole` 将成为一个**策略明确、qtype 全覆盖、行为可预期**的拦截原语。
+
+</Admonition>
+
 ### 作用
 
 对命中的 `A` / `AAAA` 请求直接返回预设地址。

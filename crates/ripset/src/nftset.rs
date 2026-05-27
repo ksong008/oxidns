@@ -44,7 +44,11 @@ const NFTA_SET_ELEM_LIST_ELEMENTS: u16 = 3;
 const NFTA_SET_ELEM_KEY: u16 = 1;
 const NFTA_SET_ELEM_FLAGS: u16 = 3;
 const NFTA_SET_ELEM_TIMEOUT: u16 = 4;
-const NFTA_SET_ELEM_KEY_END: u16 = 10;
+/// Attribute type used for each item inside a nested NFTA_*_LIST. The kernel
+/// iterates the list by index regardless of the type value, but libnftnl /
+/// `nft` always uses 1 here; mirroring that minimises differences against the
+/// reference client.
+const NFTA_LIST_ELEM: u16 = 1;
 
 // nftables data attributes
 const NFTA_DATA_VALUE: u16 = 1;
@@ -613,27 +617,13 @@ fn nftset_test_entry_exists(
     buf.put_attr_str(NFTA_SET_ELEM_LIST_TABLE, table);
     buf.put_attr_str(NFTA_SET_ELEM_LIST_SET, setname);
 
-    // Elements list (nested)
+    // Elements list (nested). For interval sets the kernel resolves
+    // containment via the interval tree, so a single start-key probe is
+    // enough — the same shape `nft get element` emits. The previous
+    // NFTA_SET_ELEM_KEY + NFTA_SET_ELEM_KEY_END combo is rejected with
+    // EINVAL on the same kernels surfaced by issue #127.
     let elems_offset = buf.start_nested(NFTA_SET_ELEM_LIST_ELEMENTS);
-
-    // Single element (nested)
-    let elem_offset = buf.start_nested(0); // Type 0 for list item
-
-    // Key (nested)
-    let key_offset = buf.start_nested(NFTA_SET_ELEM_KEY);
-
-    // Data value
-    buf.put_attr_bytes(NFTA_DATA_VALUE, addr_bytes.as_slice());
-
-    buf.end_nested(key_offset);
-
-    if let IpTarget::Cidr(_) = target {
-        let key_end_offset = buf.start_nested(NFTA_SET_ELEM_KEY_END);
-        let end_bytes = target_end_bytes(target)?.expect("interval end must exist");
-        buf.put_attr_bytes(NFTA_DATA_VALUE, end_bytes.as_slice());
-        buf.end_nested(key_end_offset);
-    }
-    buf.end_nested(elem_offset);
+    put_set_elem(&mut buf, addr_bytes.as_slice(), 0, None);
     buf.end_nested(elems_offset);
 
     buf.finalize_nlmsg();
@@ -658,6 +648,31 @@ fn nftset_test_entry_exists(
     }
 
     Ok(get_nlmsg_type(&recv_buf[..recv_len]) == Some(nft_msg_type(NFT_MSG_NEWSETELEM)))
+}
+
+/// Append a single set element (KEY + optional FLAGS + optional TIMEOUT) as a
+/// nested list item under NFTA_SET_ELEM_LIST_ELEMENTS.
+fn put_set_elem(buf: &mut MsgBuffer, key_bytes: &[u8], flags: u32, timeout_ms: Option<u64>) {
+    let elem_offset = buf.start_nested(NFTA_LIST_ELEM);
+
+    let key_offset = buf.start_nested(NFTA_SET_ELEM_KEY);
+    buf.put_attr_bytes(NFTA_DATA_VALUE, key_bytes);
+    buf.end_nested(key_offset);
+
+    if flags != 0 {
+        buf.put_attr_u32_nft(NFTA_SET_ELEM_FLAGS, flags);
+    }
+    if let Some(timeout) = timeout_ms {
+        // Per libnftnl src/set_elem.c (`nftnl_set_elem_nlmsg_build`), the
+        // per-element timeout is sent as big-endian u64 *without* the
+        // NLA_F_NET_BYTEORDER flag on the attribute type — `mnl_attr_put_u64`
+        // is called with the `htobe64`-converted value but no flag bit. Using
+        // `put_attr_u64_be` here would have set NLA_F_NET_BYTEORDER, which
+        // some strict kernel policies could reject.
+        buf.put_attr_u64_nft(NFTA_SET_ELEM_TIMEOUT, timeout);
+    }
+
+    buf.end_nested(elem_offset);
 }
 
 /// Internal function to perform nftset element operations.
@@ -712,18 +727,19 @@ fn nftset_operate(
     buf.put_attr_str(NFTA_SET_ELEM_LIST_TABLE, table);
     buf.put_attr_str(NFTA_SET_ELEM_LIST_SET, setname);
 
-    // Elements list (nested)
+    // Elements list (nested). For interval sets, encode the range as two
+    // list items the way the userspace `nft` client does:
+    //   1. start key, flags=0
+    //   2. end key (exclusive), flags=NFT_SET_ELEM_INTERVAL_END
+    // The single-element NFTA_SET_ELEM_KEY_END form is technically supported
+    // by newer kernels but is rejected with EINVAL in several real-world
+    // configurations (issue #127). Mirroring `nft` keeps us compatible with
+    // the broadest range of kernel versions and existing sets.
     let elems_offset = buf.start_nested(NFTA_SET_ELEM_LIST_ELEMENTS);
 
-    // Single element (nested)
-    let elem_offset = buf.start_nested(0); // Type 0 for list item
+    let timeout_ms = entry.timeout.map(|t| (t as u64) * 1000);
+    put_set_elem(&mut buf, addr_bytes.as_slice(), 0, timeout_ms);
 
-    // Key (nested)
-    let key_offset = buf.start_nested(NFTA_SET_ELEM_KEY);
-    buf.put_attr_bytes(NFTA_DATA_VALUE, addr_bytes.as_slice());
-    buf.end_nested(key_offset);
-
-    // For interval sets, add the end key
     if is_interval {
         let end_bytes = if is_cidr {
             target_end_bytes(entry.target)?.expect("interval end must exist")
@@ -732,19 +748,14 @@ fn nftset_operate(
                 .ok_or_else(|| IpSetError::UnsupportedEntry(entry.target.to_string()))?;
             IpAddrBytes::from_ip(end_addr)
         };
-
-        let key_end_offset = buf.start_nested(NFTA_SET_ELEM_KEY_END);
-        buf.put_attr_bytes(NFTA_DATA_VALUE, end_bytes.as_slice());
-        buf.end_nested(key_end_offset);
+        put_set_elem(
+            &mut buf,
+            end_bytes.as_slice(),
+            NFT_SET_ELEM_INTERVAL_END,
+            None,
+        );
     }
 
-    // Timeout (optional, in milliseconds for nftables)
-    if let Some(timeout) = entry.timeout {
-        // nftables uses milliseconds for timeout in netlink
-        buf.put_attr_u64_be(NFTA_SET_ELEM_TIMEOUT, (timeout as u64) * 1000);
-    }
-
-    buf.end_nested(elem_offset);
     buf.end_nested(elems_offset);
 
     buf.finalize_nlmsg_at(msg_start);
@@ -1042,9 +1053,15 @@ fn parse_nftset_elements_list(data: &[u8], result: &mut Vec<IpEntry>) -> Result<
             parse_nftset_single_element(&data[offset + NlAttr::SIZE..offset + attr_len])
         {
             if (element.flags & NFT_SET_ELEM_INTERVAL_END) != 0 {
-                let start = pending_start.take().ok_or(IpSetError::ProtocolError)?;
-                let target = range_to_target(start, Some(element.addr))?;
-                result.push(IpEntry::from(target));
+                // The kernel emits sentinel "interval-end" markers for the
+                // implicit boundaries of an interval set (e.g. 0.0.0.0 with
+                // INTERVAL_END flag closing the IPv4 address space), and
+                // these arrive without a matching start key. Treat unpaired
+                // end markers as set anchors rather than protocol errors.
+                if let Some(start) = pending_start.take() {
+                    let target = range_to_target(start, Some(element.addr))?;
+                    result.push(IpEntry::from(target));
+                }
             } else if let Some(start) = pending_start.replace(element.addr) {
                 result.push(IpEntry::from(start));
             }
@@ -1250,6 +1267,7 @@ fn parse_nftset_table_name(data: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::{find_attr, walk_attrs};
 
     #[test]
     fn test_nft_msg_type() {
@@ -1307,6 +1325,150 @@ mod tests {
             decoded & NFT_SET_INTERVAL != 0,
             "interval bit must be detectable; ne_bytes would have produced 0x04000000 here",
         );
+    }
+
+    /// `put_set_elem` is the codec used by both ADD/DEL and TEST. The bytes
+    /// it emits must match what userspace `nft` sends; this test pins the
+    /// layout so any future protocol drift fails loudly.
+    ///
+    /// Layout for a start element with no flags / no timeout:
+    /// ```text
+    /// [u16 elem_len][u16 NFTA_LIST_ELEM | NLA_F_NESTED]
+    ///   [u16 key_len][u16 NFTA_SET_ELEM_KEY | NLA_F_NESTED]
+    ///     [u16 data_len][u16 NFTA_DATA_VALUE][key bytes][pad]
+    /// ```
+    #[test]
+    fn test_put_set_elem_start_key_only() {
+        let mut buf = MsgBuffer::new(128);
+        let key = [1u8, 2, 3, 4]; // 1.2.3.4 in network order
+        put_set_elem(&mut buf, &key, 0, None);
+
+        let attrs = walk_attrs(buf.as_slice());
+        assert_eq!(attrs.len(), 1);
+        let elem = &attrs[0];
+        assert_eq!(elem.attr_type, NFTA_LIST_ELEM);
+        assert!(elem.nested);
+
+        let inner = walk_attrs(elem.payload);
+        // No flags, no timeout — only the KEY attribute.
+        assert_eq!(
+            inner.len(),
+            1,
+            "start element with no flags/timeout should contain only the key"
+        );
+        let key_attr = &inner[0];
+        assert_eq!(key_attr.attr_type, NFTA_SET_ELEM_KEY);
+        assert!(key_attr.nested);
+
+        let data = walk_attrs(key_attr.payload);
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].attr_type, NFTA_DATA_VALUE);
+        // Wire is BE: 1.2.3.4 must appear as 01 02 03 04, not 04 03 02 01.
+        assert_eq!(data[0].payload, &[1u8, 2, 3, 4]);
+    }
+
+    /// The end element of an interval add must carry the
+    /// `NFT_SET_ELEM_INTERVAL_END` flag in NFTA_SET_ELEM_FLAGS, encoded as
+    /// big-endian (without the NLA_F_NET_BYTEORDER attribute flag, per
+    /// libnftnl convention).
+    #[test]
+    fn test_put_set_elem_end_carries_interval_end_flag_big_endian() {
+        let mut buf = MsgBuffer::new(128);
+        // End key for 1.2.3.4/32 in an interval set: 1.2.3.5
+        let key = [1u8, 2, 3, 5];
+        put_set_elem(&mut buf, &key, NFT_SET_ELEM_INTERVAL_END, None);
+
+        let attrs = walk_attrs(buf.as_slice());
+        let elem = &attrs[0];
+        let inner = walk_attrs(elem.payload);
+        let flags_attr = find_attr(&inner, NFTA_SET_ELEM_FLAGS)
+            .expect("end element must carry NFTA_SET_ELEM_FLAGS");
+
+        // put_attr_u32_nft writes BE without setting NLA_F_NET_BYTEORDER.
+        assert!(
+            !flags_attr.net_byteorder,
+            "nftables u32 attributes deliberately omit NLA_F_NET_BYTEORDER",
+        );
+        assert_eq!(flags_attr.payload.len(), 4);
+        // BE encoding of 0x1 is [0x00, 0x00, 0x00, 0x01]; LE would be the reverse.
+        assert_eq!(flags_attr.payload, &[0x00, 0x00, 0x00, 0x01]);
+    }
+
+    /// IPv6 keys are 16 bytes and must be emitted in network byte order
+    /// (most-significant byte first). Round-trip 2001:db8:: and confirm.
+    #[test]
+    fn test_put_set_elem_ipv6_key_byte_order() {
+        let mut buf = MsgBuffer::new(128);
+        let ipv6: std::net::Ipv6Addr = "2001:db8::1".parse().unwrap();
+        let key = ipv6.octets();
+        put_set_elem(&mut buf, &key, 0, None);
+
+        let attrs = walk_attrs(buf.as_slice());
+        let inner = walk_attrs(attrs[0].payload);
+        let key_attr = find_attr(&inner, NFTA_SET_ELEM_KEY).unwrap();
+        let data = walk_attrs(key_attr.payload);
+        assert_eq!(data[0].payload.len(), 16);
+        // First two bytes must be 0x20 0x01, last byte 0x01.
+        assert_eq!(data[0].payload[0], 0x20);
+        assert_eq!(data[0].payload[1], 0x01);
+        assert_eq!(data[0].payload[15], 0x01);
+    }
+
+    /// Timeout is encoded as a big-endian u64 in milliseconds *without*
+    /// NLA_F_NET_BYTEORDER on the attribute type — matching libnftnl's
+    /// `nftnl_set_elem_nlmsg_build` (calls `mnl_attr_put_u64` with the
+    /// `htobe64`-converted value but no flag).
+    #[test]
+    fn test_put_set_elem_timeout_is_be_without_net_byteorder_flag() {
+        let mut buf = MsgBuffer::new(128);
+        put_set_elem(&mut buf, &[1u8, 2, 3, 4], 0, Some(60_000));
+
+        let attrs = walk_attrs(buf.as_slice());
+        let inner = walk_attrs(attrs[0].payload);
+        let timeout = find_attr(&inner, NFTA_SET_ELEM_TIMEOUT)
+            .expect("timeout attribute must be present when timeout_ms is Some");
+        assert!(
+            !timeout.net_byteorder,
+            "libnftnl emits NFTA_SET_ELEM_TIMEOUT without NLA_F_NET_BYTEORDER",
+        );
+        assert_eq!(timeout.payload.len(), 8);
+        // 60_000 == 0xEA60: BE bytes are 00 00 00 00 00 00 EA 60.
+        assert_eq!(
+            timeout.payload,
+            &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xEA, 0x60]
+        );
+    }
+
+    /// `nftset_get_flags`' response parser was the site of the issue #122
+    /// byte-order bug. Construct a synthetic GETSET response payload by
+    /// emitting the same attribute the kernel would send (a 4-byte
+    /// big-endian NFTA_SET_FLAGS) and confirm the parser recovers the value
+    /// correctly. Catches future drift in either the writer or the reader.
+    #[test]
+    fn test_nfta_set_flags_decode_matches_writer() {
+        // Build a fake payload with NFTA_SET_TABLE first (a string the
+        // parser must skip over) and NFTA_SET_FLAGS containing
+        // NFT_SET_INTERVAL.
+        let mut buf = MsgBuffer::new(64);
+        buf.put_attr_str(NFTA_SET_TABLE, "filter");
+        buf.put_attr_u32_nft(NFTA_SET_FLAGS, NFT_SET_INTERVAL);
+
+        // Use the same walker the production code mimics. The kernel
+        // wire format for NFTA_SET_FLAGS is BE u32 — decoding any other
+        // way produces 0x04000000 on little-endian hosts (the symptom of
+        // issue #122).
+        let attrs = walk_attrs(buf.as_slice());
+        let flags = find_attr(&attrs, NFTA_SET_FLAGS).unwrap();
+        let decoded_be = u32::from_be_bytes(flags.payload.try_into().unwrap());
+        let decoded_ne = u32::from_ne_bytes(flags.payload.try_into().unwrap());
+        assert_eq!(decoded_be, NFT_SET_INTERVAL);
+        // Sanity: on little-endian (x86_64 / aarch64), the wrong reader
+        // would have returned 0x04000000. On big-endian hosts it happens
+        // to be the same as BE — but the test asserts the correct path
+        // anyway.
+        if cfg!(target_endian = "little") {
+            assert_ne!(decoded_ne, decoded_be, "regression sanity for #122");
+        }
     }
 
     #[test]
