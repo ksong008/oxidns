@@ -1,4 +1,5 @@
 import type { Monaco } from "@monaco-editor/react";
+import "@/lib/monaco-loader";
 import {
   getPluginKindDefinition,
   pluginKindDefinitions,
