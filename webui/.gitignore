@@ -9,6 +9,9 @@
 /build/
 next-env.d.ts
 
+# Self-hosted Monaco assets staged from node_modules by scripts/copy-monaco.mjs
+/public/monaco/
+
 # Production and analyzer output
 /dist/
 /.vercel/
