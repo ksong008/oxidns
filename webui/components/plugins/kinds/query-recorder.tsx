@@ -188,6 +188,16 @@ const CHART_COLORS = [
   "var(--chart-5)",
 ];
 const TOP_PAGE_SIZE = 20;
+// Per-row height for the horizontal Top-N bar charts. Recharts' category axis
+// drops tick labels when bars are packed too tightly, so the chart container
+// grows with the row count to guarantee every Top-N entry stays labeled.
+const CHART_ROW_HEIGHT = 24;
+const CHART_MIN_HEIGHT = 240;
+const CHART_VERTICAL_PADDING = 16;
+// Cap the chart's visible footprint. When "加载更多" pushes the row count past
+// what fits here, the chart keeps its full per-row height and the container
+// scrolls instead of growing without bound — so labels stay 1:1 either way.
+const CHART_MAX_HEIGHT = 640;
 
 // ---------------------------------------------------------------------------
 // 「统计」Tab — original layout: MatcherStatsCard on top, QueryRecordsPanel
@@ -1240,6 +1250,13 @@ function TopBucketsCard({
     [data],
   );
   const hasMoreRows = chartData.length >= limit;
+  // Vertical bar chart: each row needs its own vertical slot or recharts'
+  // category axis silently drops labels to avoid overlap (issue #137). Size
+  // the chart by row count so every Top-N entry keeps a readable, 1:1 label.
+  const chartHeight = Math.max(
+    CHART_MIN_HEIGHT,
+    chartData.length * CHART_ROW_HEIGHT + CHART_VERTICAL_PADDING,
+  );
 
   return (
     <Card className="mt-3">
@@ -1275,55 +1292,61 @@ function TopBucketsCard({
           </div>
         )}
         {chartData.length > 0 && (
-          <div className="h-[360px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={chartData}
-                layout="vertical"
-                margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
-              >
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="var(--border)"
-                  horizontal={false}
-                />
-                <XAxis
-                  type="number"
-                  stroke="var(--muted-foreground)"
-                  fontSize={11}
-                  allowDecimals={false}
-                />
-                <YAxis
-                  type="category"
-                  dataKey="key"
-                  stroke="var(--muted-foreground)"
-                  fontSize={11}
-                  width={180}
-                  tickFormatter={(value: string) => truncateMiddle(value, 28)}
-                />
-                <RechartsTooltip
-                  cursor={{ fill: "var(--muted)", opacity: 0.3 }}
-                  contentStyle={{
-                    background: "var(--popover)",
-                    border: "1px solid var(--border)",
-                    borderRadius: 8,
-                    color: "var(--foreground)",
-                    fontSize: 12,
-                  }}
-                  formatter={(value: number, _name, props) => [
-                    `${value} 次 (${formatPercent(
-                      (props.payload?.share as number) ?? 0,
-                    )})`,
-                    keyLabel,
-                  ]}
-                />
-                <Bar
-                  dataKey="count"
-                  fill="var(--chart-1)"
-                  radius={[0, 4, 4, 0]}
-                />
-              </BarChart>
-            </ResponsiveContainer>
+          <div
+            className="w-full overflow-y-auto"
+            style={{ maxHeight: CHART_MAX_HEIGHT }}
+          >
+            <div className="w-full" style={{ height: chartHeight }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={chartData}
+                  layout="vertical"
+                  margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
+                >
+                  <CartesianGrid
+                    strokeDasharray="3 3"
+                    stroke="var(--border)"
+                    horizontal={false}
+                  />
+                  <XAxis
+                    type="number"
+                    stroke="var(--muted-foreground)"
+                    fontSize={11}
+                    allowDecimals={false}
+                  />
+                  <YAxis
+                    type="category"
+                    dataKey="key"
+                    stroke="var(--muted-foreground)"
+                    fontSize={11}
+                    width={180}
+                    interval={0}
+                    tickFormatter={(value: string) => truncateMiddle(value, 28)}
+                  />
+                  <RechartsTooltip
+                    cursor={{ fill: "var(--muted)", opacity: 0.3 }}
+                    contentStyle={{
+                      background: "var(--popover)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 8,
+                      color: "var(--foreground)",
+                      fontSize: 12,
+                    }}
+                    formatter={(value: number, _name, props) => [
+                      `${value} 次 (${formatPercent(
+                        (props.payload?.share as number) ?? 0,
+                      )})`,
+                      keyLabel,
+                    ]}
+                  />
+                  <Bar
+                    dataKey="count"
+                    fill="var(--chart-1)"
+                    radius={[0, 4, 4, 0]}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           </div>
         )}
         <div className="overflow-hidden rounded-md border">
