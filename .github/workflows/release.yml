@@ -317,6 +317,21 @@ jobs:
           generate_release_notes: true
           draft: false
 
+      - name: Notify Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          VERSION: ${{ github.ref_name }}
+          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          MESSAGE=$(printf '🎉 OxiDNS %s 已发布\n\n👉 查看更新：%s' "$VERSION" "$RELEASE_URL")
+          curl -sS --fail-with-body \
+            -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${MESSAGE}" \
+            --data-urlencode "disable_web_page_preview=false"
+
   publish-crate:
     name: Publish to crates.io
     if: startsWith(github.ref, 'refs/tags/')

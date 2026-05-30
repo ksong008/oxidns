@@ -10,7 +10,31 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-05
 
 <div className="release-stack">
-   <ReleaseCard version="v1.1.3" badge="Patch Release" date="2026-05-27" defaultOpen>
+   <ReleaseCard version="v1.1.4" badge="Patch Release" date="2026-05-30" defaultOpen>
+       **Release Scope**
+
+       - Patch Release reducing memory footprint and reload cost on the provider and rule-matching paths, plus WebUI fixes for mobile config-editor and plugin-filter usability, query-recorder chart labels, and self-hosting the Monaco editor. Also adds a "Migrate from mosdns" guide. This release introduces no breaking configuration changes and leaves the query hot path unchanged.
+
+       **Changes**
+
+       - The `client_ip` / `resp_ip` / `ptr_ip` inline IP matchers now compile via `finalize_compact`, so compiled matchers no longer retain a duplicate copy of the source IP ranges (`ip_set` / `geoip` already did this).
+       - `finalize_compact` now moves the merged IPv6 ranges into the compiled matcher instead of cloning them.
+       - `geoip` feeds CIDR bytes straight into the matcher via `add_v4_network` / `add_v6_network`, skipping the per-entry `String` format + reparse round trip and speeding up load and reload.
+       - `adguard_rule` `badfilter` resolution uses a HashSet built once instead of an O(n²) rescan that reallocated the cache key on every comparison.
+       - Fixed the WebUI config editor and plugin filters being unusable on mobile.
+       - Fixed Top-N labels being truncated in the WebUI query-recorder charts.
+       - The WebUI Monaco editor is now self-hosted instead of loaded from the jsdelivr CDN, working in offline or restricted-network environments.
+       - Docs: added a "Migrate from mosdns" guide.
+
+       **Compatibility and Upgrade Notes**
+
+       - Root crate version bumped to `1.1.4`; no `crates/` workspace crate changed, so none need a version bump; release tag should use `v1.1.4`.
+       - `v1.1.3` configs upgrade directly to `v1.1.4` with no new required fields.
+       - The provider / matcher optimizations are internal implementation changes; they do not alter matching semantics or the query hot path and require no config changes.
+       - Deployments using the WebUI config editor in restricted or offline networks benefit from the self-hosted Monaco editor and no longer need external CDN access.
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.1.3" badge="Patch Release" date="2026-05-27">
        **Release Scope**
 
        - Patch Release fixing a Linux `nftset` interval-set ADD/DEL that was rejected by real kernels with EINVAL, an `ipset` byte-order bug in `hashsize` / `maxelem`, and a WebUI `query_recorder` tabs overflow. Also adds an upfront notice on the `black_hole` plugin documentation describing an upcoming behavior redesign. This release does not introduce breaking configuration changes.

@@ -25,9 +25,18 @@ import {
   Copy,
   ClipboardCheck,
   LogOut,
+  PanelRightOpen,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 export function ConfigEditorView() {
   const yamlConfig = useAppStore((s) => s.configText);
@@ -51,6 +60,10 @@ export function ConfigEditorView() {
   );
   const [copied, setCopied] = useState(false);
   const [isMac, setIsMac] = useState(false);
+  const isMobile = useIsMobile();
+  // On mobile the index panel is collapsed into a drawer so the editor is not
+  // squeezed off-screen by the fixed-width side panel.
+  const [indexOpen, setIndexOpen] = useState(false);
 
   const hasChanges = yamlConfig !== originalConfig;
   const modKey = isMac ? "⌘" : "Ctrl";
@@ -122,16 +135,57 @@ export function ConfigEditorView() {
       });
   };
 
+  const handleJumpToLine = (line: number) => {
+    yamlEditorRef.current?.jumpToLine(line);
+    setIndexOpen(false);
+  };
+
   const busy = isConfigSaving || isRestarting;
+
+  const shortcutsBlock = (
+    <div className="border-t px-3 py-3 flex-shrink-0 space-y-2">
+      <p className="text-xs text-muted-foreground font-medium mb-1.5">快捷键</p>
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-muted-foreground">缩进</span>
+        <kbd className="px-1.5 py-0.5 bg-muted rounded font-mono text-xs">
+          Tab
+        </kbd>
+      </div>
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-muted-foreground">保存</span>
+        <div className="flex gap-0.5">
+          <kbd className="px-1.5 py-0.5 bg-muted rounded font-mono text-xs">
+            {modKey}
+          </kbd>
+          <kbd className="px-1.5 py-0.5 bg-muted rounded font-mono text-xs">
+            S
+          </kbd>
+        </div>
+      </div>
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-muted-foreground">撤销</span>
+        <div className="flex gap-0.5">
+          <kbd className="px-1.5 py-0.5 bg-muted rounded font-mono text-xs">
+            {modKey}
+          </kbd>
+          <kbd className="px-1.5 py-0.5 bg-muted rounded font-mono text-xs">
+            Z
+          </kbd>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="flex items-center justify-between px-6 py-4 border-b bg-card/50">
-        <div className="flex items-center gap-3">
-          <FileCode2 className="h-5 w-5 text-muted-foreground" />
-          <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 py-3 sm:py-4 border-b bg-card/50">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-wrap">
+          <FileCode2 className="h-5 w-5 text-muted-foreground flex-shrink-0" />
+          <div className="min-w-0">
             <h2 className="text-lg font-semibold">配置文件编辑器</h2>
-            <p className="text-sm text-muted-foreground">{configPath}</p>
+            <p className="text-sm text-muted-foreground truncate">
+              {configPath}
+            </p>
           </div>
           {isOfflineMode && (
             <Badge
@@ -180,7 +234,17 @@ export function ConfigEditorView() {
             </Badge>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {isMobile && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIndexOpen(true)}
+            >
+              <PanelRightOpen className="h-4 w-4 mr-1.5" />
+              索引
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -233,7 +297,7 @@ export function ConfigEditorView() {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 p-6 flex flex-col">
+      <div className="flex-1 min-h-0 p-3 sm:p-6 flex flex-col">
         <div className="flex-1 min-h-0 flex gap-6">
           <div className="flex-1 min-w-0 min-h-0">
             <YamlEditor
@@ -255,53 +319,45 @@ export function ConfigEditorView() {
             />
           </div>
 
-          <Card className="w-80 flex-shrink-0 flex flex-col min-h-0">
-            <CardHeader className="flex-shrink-0 pb-2">
-              <CardTitle className="text-sm">插件索引</CardTitle>
-              <CardDescription>点击跳转到定义行</CardDescription>
-            </CardHeader>
-            <CardContent className="flex-1 min-h-0 overflow-y-auto pb-2 px-3">
-              <PluginIndexPanel
-                yamlText={yamlConfig}
-                onJumpToLine={(line) => yamlEditorRef.current?.jumpToLine(line)}
-              />
-            </CardContent>
-            <div className="border-t px-3 py-3 flex-shrink-0 space-y-2">
-              <p className="text-xs text-muted-foreground font-medium mb-1.5">
-                快捷键
-              </p>
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground">缩进</span>
-                <kbd className="px-1.5 py-0.5 bg-muted rounded font-mono text-xs">
-                  Tab
-                </kbd>
-              </div>
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground">保存</span>
-                <div className="flex gap-0.5">
-                  <kbd className="px-1.5 py-0.5 bg-muted rounded font-mono text-xs">
-                    {modKey}
-                  </kbd>
-                  <kbd className="px-1.5 py-0.5 bg-muted rounded font-mono text-xs">
-                    S
-                  </kbd>
-                </div>
-              </div>
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground">撤销</span>
-                <div className="flex gap-0.5">
-                  <kbd className="px-1.5 py-0.5 bg-muted rounded font-mono text-xs">
-                    {modKey}
-                  </kbd>
-                  <kbd className="px-1.5 py-0.5 bg-muted rounded font-mono text-xs">
-                    Z
-                  </kbd>
-                </div>
-              </div>
-            </div>
-          </Card>
+          {!isMobile && (
+            <Card className="w-80 flex-shrink-0 flex flex-col min-h-0">
+              <CardHeader className="flex-shrink-0 pb-2">
+                <CardTitle className="text-sm">插件索引</CardTitle>
+                <CardDescription>点击跳转到定义行</CardDescription>
+              </CardHeader>
+              <CardContent className="flex-1 min-h-0 overflow-y-auto pb-2 px-3">
+                <PluginIndexPanel
+                  yamlText={yamlConfig}
+                  onJumpToLine={handleJumpToLine}
+                />
+              </CardContent>
+              {shortcutsBlock}
+            </Card>
+          )}
         </div>
       </div>
+
+      {isMobile && (
+        <Sheet open={indexOpen} onOpenChange={setIndexOpen}>
+          {/* Width is left to SheetContent's default (data-[side=right]:w-3/4,
+              i.e. 75vw). A plain w-* override here would lose to that
+              variant-prefixed base class under tailwind-merge anyway, and 75vw
+              already leaves a comfortable backdrop strip to tap-close on mobile. */}
+          <SheetContent side="right" className="gap-0 p-0">
+            <SheetHeader className="px-4 pt-4 pb-2">
+              <SheetTitle className="text-sm">插件索引</SheetTitle>
+              <SheetDescription>点击跳转到定义行</SheetDescription>
+            </SheetHeader>
+            <div className="flex-1 min-h-0 overflow-y-auto px-3 pb-2">
+              <PluginIndexPanel
+                yamlText={yamlConfig}
+                onJumpToLine={handleJumpToLine}
+              />
+            </div>
+            {shortcutsBlock}
+          </SheetContent>
+        </Sheet>
+      )}
     </div>
   );
 }

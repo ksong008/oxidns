@@ -164,6 +164,18 @@ body {
     background-clip: content-box;
   }
 
+  /* Hide the scrollbar while keeping the element scrollable. Used by the
+     horizontally scrollable filter bar on narrow (mobile) viewports so the
+     category tabs can be swiped through without a visible scrollbar. */
+  .oxidns-no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .oxidns-no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
   .sequence-flow .react-flow__pane {
     z-index: 0;
     cursor: grab;

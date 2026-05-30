@@ -10,7 +10,31 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-05
 
 <div className="release-stack">
-   <ReleaseCard version="v1.1.3" badge="Patch Release" date="2026-05-27" defaultOpen>
+   <ReleaseCard version="v1.1.4" badge="Patch Release" date="2026-05-30" defaultOpen>
+       **版本定位**
+
+       - Patch Release，重点优化 provider 与规则匹配路径的内存占用与重载开销，并修复 WebUI 在移动端的配置编辑器与插件筛选可用性、查询记录图表标签显示，及 Monaco 编辑器改为本地自托管。同时新增"从 mosdns 迁移"文档。本版本不引入破坏性配置变更，查询热路径行为保持不变。
+
+       **主要变更**
+
+       - `client_ip` / `resp_ip` / `ptr_ip` 内联 IP 匹配器编译后改用 `finalize_compact`，不再保留一份重复的源 IP 区间副本（`ip_set` / `geoip` 此前已如此）。
+       - `finalize_compact` 现在将合并后的 IPv6 区间移动进编译结构，而非克隆。
+       - `geoip` 加载时通过 `add_v4_network` / `add_v6_network` 直接喂入 CIDR 字节，省去每条记录 `String` 格式化再重新解析的往返，加快加载与 reload。
+       - `adguard_rule` 的 `badfilter` 解析改为一次构建 HashSet，替换原先每次比较都重新分配 cache key 的 O(n²) 扫描。
+       - 修复 WebUI 配置编辑器与插件筛选在移动端无法正常使用的问题。
+       - 修复 WebUI 查询记录图表 Top-N 标签被截断、无法完整显示的问题。
+       - WebUI Monaco 编辑器改为本地自托管，不再从 jsdelivr CDN 加载，便于离线或受限网络环境下使用。
+       - 文档：新增"从 mosdns 迁移"指南。
+
+       **配置与升级说明**
+
+       - 根 crate 版本号升级为 `1.1.4`；本版本无 `crates/` 子 crate 改动，无需同步升级；release tag 应使用 `v1.1.4`。
+       - `v1.1.3` 配置可直接升级到 `v1.1.4`，未引入新的必填配置字段。
+       - provider / 匹配器优化为内部实现改进，不改变匹配语义与查询热路径行为，无需调整配置。
+       - 受限或离线网络环境下使用 WebUI 配置编辑器的部署可受益于 Monaco 本地自托管，无需访问外部 CDN。
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.1.3" badge="Patch Release" date="2026-05-27">
        **版本定位**
 
        - Patch Release，重点修复 Linux `nftset` interval 集合写入被内核以 EINVAL 拒绝的问题、`ipset` 创建集合时 `hashsize` / `maxelem` 字节序错误，并完善 WebUI `query_recorder` 标签列表纵向溢出。同时为 `black_hole` 插件文档加入"行为将在后续版本改造"的预告。本版本不引入破坏性配置变更。

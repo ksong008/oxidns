@@ -144,23 +144,29 @@ function PluginsPageContent() {
             </div>
 
             {viewMode !== "topology" && (
-              <TabsList>
-                <TabsTrigger value="all">
-                  全部
-                  <Badge variant="secondary" className="ml-1.5 text-xs">
-                    {plugins.length}
-                  </Badge>
-                </TabsTrigger>
-                {(Object.keys(pluginsByType) as PluginType[]).map((type) => (
-                  <TabsTrigger key={type} value={type} className="gap-1.5">
-                    {pluginTypeIcons[type]}
-                    {PLUGIN_TYPE_LABELS[type]}
-                    <Badge variant="secondary" className="ml-1 text-xs">
-                      {pluginsByType[type].length}
+              // The category bar overflows narrow (mobile) viewports, so make
+              // it horizontally scrollable. -mx-6 px-6 lets the pills bleed to
+              // the screen edges while staying aligned with the toolbar inset;
+              // on desktop the list fits and nothing scrolls.
+              <div className="oxidns-no-scrollbar -mx-6 overflow-x-auto px-6">
+                <TabsList>
+                  <TabsTrigger value="all">
+                    全部
+                    <Badge variant="secondary" className="ml-1.5 text-xs">
+                      {plugins.length}
                     </Badge>
                   </TabsTrigger>
-                ))}
-              </TabsList>
+                  {(Object.keys(pluginsByType) as PluginType[]).map((type) => (
+                    <TabsTrigger key={type} value={type} className="gap-1.5">
+                      {pluginTypeIcons[type]}
+                      {PLUGIN_TYPE_LABELS[type]}
+                      <Badge variant="secondary" className="ml-1 text-xs">
+                        {pluginsByType[type].length}
+                      </Badge>
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </div>
             )}
           </div>
 
