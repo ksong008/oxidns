@@ -371,7 +371,7 @@ impl Cache {
             }
 
             let stats =
-                Cache::prune_cache_periodic(&cache_map, cache_size, AppClock::elapsed_millis());
+                Cache::prune_cache_after_load(&cache_map, cache_size, AppClock::elapsed_millis());
             if stats.total_removed() > 0 {
                 debug!(
                     expired_removed = stats.expired_removed,
@@ -538,6 +538,34 @@ impl Cache {
             Self::evict_lru_sampled(
                 cache_map,
                 Self::periodic_eviction_limit(cache_size, evict_target),
+                EVICTION_SAMPLE_SIZE,
+            )
+        } else {
+            0
+        };
+
+        CachePruneStats {
+            before_len,
+            after_len: cache_map.len(),
+            expired_removed,
+            evicted,
+        }
+    }
+
+    fn prune_cache_after_load(
+        cache_map: &CacheMap,
+        cache_size: usize,
+        now: u64,
+    ) -> CachePruneStats {
+        let before_len = cache_map.len();
+        let expired_removed =
+            Self::remove_expired_with_limit(cache_map, now, before_len, EXPIRED_SWEEP_BATCH);
+
+        let current_size = cache_map.len();
+        let evicted = if current_size > cache_size {
+            Self::evict_lru_sampled(
+                cache_map,
+                current_size.saturating_sub(cache_size),
                 EVICTION_SAMPLE_SIZE,
             )
         } else {
@@ -1495,6 +1523,29 @@ mod tests {
         assert_eq!(stats.expired_removed, 0);
         assert_eq!(stats.evicted, 26);
         assert_eq!(cache_map.len(), 6);
+    }
+
+    #[test]
+    fn load_prune_trims_large_cache_to_configured_limit() {
+        let cache_size = FULL_TRIM_CACHE_SIZE_LIMIT + 1;
+        let excess = LARGE_CACHE_EVICTION_MAX_BATCH + 17;
+        let live_count = cache_size + excess;
+        let cache_map = CacheMap::with_capacity(Cache::initial_cache_capacity(cache_size));
+        let now = 10_000u64;
+        for idx in 0..live_count {
+            insert_test_cache_entry(
+                &cache_map,
+                format!("live-{idx}.example"),
+                now.saturating_add(60_000),
+                idx as u64,
+            );
+        }
+
+        let stats = Cache::prune_cache_after_load(&cache_map, cache_size, now);
+
+        assert_eq!(stats.expired_removed, 0);
+        assert_eq!(stats.evicted, excess);
+        assert_eq!(cache_map.len(), cache_size);
     }
 
     fn add_ecs(request: &mut Message, subnet: &str) {

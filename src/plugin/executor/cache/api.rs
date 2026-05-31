@@ -136,7 +136,7 @@ impl ApiHandler for CacheLoadDumpHandler {
     async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
         match load_cache_from_bytes(&self.cache_map, request.body(), self.ecs_in_key, true) {
             Ok(loaded_entries) => {
-                let stats = Cache::prune_cache_periodic(
+                let stats = Cache::prune_cache_after_load(
                     &self.cache_map,
                     self.cache_size,
                     AppClock::elapsed_millis(),
