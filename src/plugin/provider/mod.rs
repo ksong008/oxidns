@@ -33,6 +33,7 @@ use crate::register_plugin_api;
 
 pub mod adguard_rule;
 pub mod domain_set;
+pub mod dynamic_domain_set;
 pub mod geoip;
 pub mod geosite;
 pub mod ip_set;

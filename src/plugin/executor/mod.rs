@@ -45,6 +45,7 @@ pub mod forward_edns0opt;
 pub mod hosts;
 pub mod http_request;
 pub mod ipset;
+pub mod learn_domain;
 pub mod metrics_collector;
 pub mod nftset;
 pub mod query_recorder;
