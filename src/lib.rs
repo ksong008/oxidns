@@ -14,6 +14,7 @@
 //!
 //! - [`api`]: management and health HTTP endpoints.
 //! - [`app`]: foreground runtime bootstrap, CLI parsing, and logging setup.
+//! - [`build_info`]: compiled feature bundle and plugin capability reporting.
 //! - [`config`]: YAML configuration schema, loading, and validation.
 //! - [`core`]: shared runtime primitives such as errors, request context, task
 //!   coordination, and TTL cache helpers.
@@ -27,6 +28,7 @@
 pub mod api;
 mod api_macros;
 pub mod app;
+pub mod build_info;
 pub mod config;
 pub mod core;
 pub mod network;

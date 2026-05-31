@@ -97,6 +97,15 @@ pub fn check(options: CheckOptions) -> Result<()> {
     }
 }
 
+/// Print compiled feature and plugin support information as JSON.
+pub fn print_build_info() -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&crate::build_info::snapshot()?)?
+    );
+    Ok(())
+}
+
 fn prepare_working_dir(working_dir: Option<&std::path::PathBuf>) -> Result<()> {
     if let Some(working_dir) = working_dir {
         std::env::set_current_dir(working_dir).map_err(|err| {

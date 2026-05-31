@@ -95,6 +95,7 @@ fn test_api_hub_with_options(
         .expect("health routes should register");
     #[cfg(feature = "metrics")]
     metrics::register_builtin_routes(&register).expect("metrics routes should register");
+    build::register_builtin_routes(&register).expect("build routes should register");
     hub
 }
 
@@ -580,6 +581,49 @@ async fn test_hyper_old_unprefixed_api_route_is_not_registered() {
         .expect("health response");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    hub.stop().await;
+}
+
+#[tokio::test]
+async fn test_hyper_serves_build_info_route() {
+    AppClock::start();
+    let addr = reserve_local_addr();
+    let hub = test_api_hub(addr, None);
+
+    start_test_api_hub(&hub).await;
+
+    let client = http1_client();
+    let uri: Uri = format!("http://{addr}/api/build")
+        .parse()
+        .expect("request uri");
+    let response = client
+        .request(
+            HyperRequest::builder()
+                .method(Method::GET)
+                .uri(uri)
+                .body(Empty::new())
+                .expect("request"),
+        )
+        .await
+        .expect("build info response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("collect body")
+        .to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+    assert_eq!(value["build"]["version"], crate::core::VERSION);
+    assert!(
+        value["build"]["supported_plugins"]["executors"]
+            .as_array()
+            .expect("executors should be an array")
+            .iter()
+            .any(|value| value == "sequence")
+    );
 
     hub.stop().await;
 }

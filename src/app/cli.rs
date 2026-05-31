@@ -11,7 +11,7 @@ use clap::{Args, Parser, Subcommand};
 
 /// Top-level CLI definition.
 #[derive(Parser, Clone, Debug)]
-#[command(version, author = "Sven Shi <isvenshi@gmail.com>")]
+#[command(version = crate::build_info::CLI_VERSION, author = "Sven Shi <isvenshi@gmail.com>")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -24,6 +24,8 @@ pub enum Command {
     Start(StartOptions),
     /// Check whether a configuration file is valid.
     Check(CheckOptions),
+    /// Print compiled feature and plugin capability information.
+    BuildInfo,
     /// Export selected rules from a dat file into text files.
     #[cfg(feature = "provider-protobuf")]
     ExportDat(ExportDatOptions),
@@ -242,9 +244,17 @@ pub fn parse_cli() -> Cli {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     use super::*;
+
+    #[test]
+    fn cli_version_uses_compiled_version() {
+        assert_eq!(
+            Cli::command().get_version(),
+            Some(crate::build_info::CLI_VERSION)
+        );
+    }
 
     #[test]
     fn parse_start_command_with_explicit_flags() {
@@ -328,6 +338,14 @@ mod tests {
                 graph: false,
             })
         );
+    }
+
+    #[test]
+    fn parse_build_info_command() {
+        let args = ["oxidns", "build-info"];
+
+        let cli = Cli::parse_from(args);
+        assert_eq!(cli.command, Command::BuildInfo);
     }
 
     #[cfg(feature = "plugin-upgrade")]

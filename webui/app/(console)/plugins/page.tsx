@@ -22,6 +22,7 @@ import {
 import { Search, LayoutGrid, List, Pin, PinOff, GitBranch } from "lucide-react";
 import type { PluginType } from "@/lib/types";
 import { PLUGIN_TYPE_LABELS } from "@/lib/types";
+import { isPluginKindSupported } from "@/lib/build-capabilities";
 import { cn } from "@/lib/utils";
 import {
   Tooltip,
@@ -58,6 +59,7 @@ function PluginsPageContent() {
   const [search, setSearch] = useState("");
 
   const plugins = useAppStore((s) => s.plugins);
+  const buildInfo = useAppStore((s) => s.buildInfo);
   const dependencyGraph = useAppStore((s) => s.dependencyGraph);
   const { setSelectedPlugin, setDetailOpen, togglePluginPin, reorderPlugins } =
     useAppStore();
@@ -218,7 +220,14 @@ function PluginsPageContent() {
                             </Badge>
                           </TableCell>
                           <TableCell>
-                            <PluginKindBadge pluginKind={plugin.pluginKind} />
+                            <PluginKindBadge
+                              pluginKind={plugin.pluginKind}
+                              supported={isPluginKindSupported(
+                                buildInfo,
+                                plugin.type,
+                                plugin.pluginKind,
+                              )}
+                            />
                           </TableCell>
                           <TableCell>
                             <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -303,14 +312,27 @@ function PluginsPageFallback() {
   );
 }
 
-function PluginKindBadge({ pluginKind }: { pluginKind: string }) {
+function PluginKindBadge({
+  pluginKind,
+  supported,
+}: {
+  pluginKind: string;
+  supported: boolean;
+}) {
   const definition = getPluginCatalogItem(pluginKind);
 
   return (
-    <Badge variant="outline" className="gap-1.5">
+    <Badge
+      variant="outline"
+      className={cn(
+        "gap-1.5",
+        !supported && "border-dashed text-muted-foreground",
+      )}
+    >
       {definition &&
         renderPluginKindIcon(definition.icon, { className: "h-3 w-3" })}
       {definition?.name ?? pluginKind}
+      {!supported && " · 未编译"}
     </Badge>
   );
 }

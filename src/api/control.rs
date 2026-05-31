@@ -19,6 +19,7 @@ use http::{Method, Request, StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::api::{ApiHandler, ApiRegister, json_error, json_ok, json_response};
+use crate::build_info::BuildInfo;
 use crate::config;
 use crate::core::VERSION;
 use crate::core::app_controller::{
@@ -79,6 +80,7 @@ struct ConfigSaveResponse {
 struct SystemResponse {
     ok: bool,
     version: &'static str,
+    build: BuildInfo,
     os: &'static str,
     arch: &'static str,
     uptime_ms: u64,
@@ -226,11 +228,22 @@ impl ApiHandler for SystemHandler {
     async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
         let snapshot = self.controller.snapshot();
         let metrics = self.controller.sample_process_metrics();
+        let build = match crate::build_info::snapshot() {
+            Ok(build) => build,
+            Err(err) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "build_info_unavailable",
+                    err.to_string(),
+                );
+            }
+        };
         json_ok(
             StatusCode::OK,
             &SystemResponse {
                 ok: true,
                 version: VERSION,
+                build,
                 os: std::env::consts::OS,
                 arch: std::env::consts::ARCH,
                 uptime_ms: snapshot.uptime_ms,
@@ -698,6 +711,33 @@ plugins:
             .handle(test_request(Method::POST, "/reload", Bytes::new()))
             .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn system_handler_reports_build_capabilities() {
+        AppClock::start();
+        let temp = NamedTempFile::new().expect("temp file");
+        std::fs::write(temp.path(), valid_config_yaml()).expect("write config");
+        let (controller, _rx) = AppController::new(temp.path().to_path_buf());
+        let handler = SystemHandler { controller };
+
+        let response = handler
+            .handle(test_request(Method::GET, "/system", Bytes::new()))
+            .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("body should be json");
+        assert_eq!(value["version"], VERSION);
+        assert_eq!(value["build"]["version"], VERSION);
+        assert_eq!(value["build"]["bundle"], crate::build_info::PRIMARY_BUNDLE);
+        assert!(
+            value["build"]["supported_plugins"]["executors"]
+                .as_array()
+                .expect("executors should be an array")
+                .iter()
+                .any(|value| value == "sequence")
+        );
     }
 
     #[tokio::test]

@@ -21,6 +21,7 @@
 //! matching or response generation.
 
 mod auth;
+mod build;
 pub mod control;
 mod cors;
 mod global;
@@ -68,6 +69,7 @@ pub fn register_builtin_routes() -> Result<()> {
         #[cfg(feature = "metrics")]
         metrics::register_builtin_routes(&register)?;
         logs::register_log_routes(&register)?;
+        build::register_builtin_routes(&register)?;
     }
     Ok(())
 }

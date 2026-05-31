@@ -13,6 +13,7 @@ import {
   type OxiDnsConfig,
 } from "./oxidns-config";
 import {
+  fetchBuildInfo,
   fetchControl,
   fetchConfigFile,
   fetchHealth,
@@ -23,6 +24,7 @@ import {
   requestRestart,
   saveConfigFile,
   validateConfigText,
+  type BuildInfo,
   type ConfigFileResponse,
   type ConfigValidateResponse,
   type ControlResponse,
@@ -82,6 +84,7 @@ export type PluginRenameResult =
 interface AppState {
   plugins: PluginInstance[];
   health: HealthResponse | null;
+  buildInfo: BuildInfo | null;
   control: ControlResponse | null;
   system: SystemResponse | null;
   reloadStatus: ReloadSnapshot | null;
@@ -178,6 +181,7 @@ const initialConfigText = stringifyOxiDnsConfig(initialConfigModel);
 export const useAppStore = create<AppState>((set, get) => ({
   plugins: [],
   health: null,
+  buildInfo: null,
   control: null,
   system: null,
   reloadStatus: null,
@@ -249,6 +253,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       configHistory: [],
       reloadStatus: null,
       health: null,
+      buildInfo: null,
       control: null,
       system: null,
     });
@@ -296,16 +301,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       fetchControl(),
       fetchSystem(),
       fetchReloadStatus(),
+      fetchBuildInfo(),
     ]);
-    const [health, control, system, reloadStatus] = results;
+    const [health, control, system, reloadStatus, buildInfo] = results;
     const nextReload =
       reloadStatus.status === "fulfilled"
         ? reloadStatus.value
         : get().reloadStatus;
+    const nextSystem = system.status === "fulfilled" ? system.value : null;
+    const nextBuildInfo =
+      buildInfo.status === "fulfilled"
+        ? buildInfo.value.build
+        : nextSystem
+          ? (nextSystem.build ?? null)
+          : get().buildInfo;
     set({
       health: health.status === "fulfilled" ? health.value : get().health,
+      buildInfo: nextBuildInfo,
       control: control.status === "fulfilled" ? control.value : get().control,
-      system: system.status === "fulfilled" ? system.value : get().system,
+      system: nextSystem ?? get().system,
       reloadStatus: nextReload,
       // The backend authoritatively reports what config it is running; prefer
       // it over the load-time disk-version guess so the "未应用" state

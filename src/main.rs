@@ -21,6 +21,7 @@ fn main() -> Result<()> {
     match cli::parse_cli().command {
         Command::Start(start) => app::run(start),
         Command::Check(check) => app::check(check),
+        Command::BuildInfo => app::print_build_info(),
         #[cfg(feature = "provider-protobuf")]
         Command::ExportDat(export) => app::export_dat::run(export),
         Command::Service(service_opts) => service::run(service_opts),
