@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -61,7 +61,24 @@ pub(super) fn append_rule_file(path: &Path, rules: &[String]) -> DnsResult<()> {
     // Append is used only for newly staged rules. Full rewrites are reserved
     // for delete/clear so the common learn path avoids rewriting large files.
     with_rule_file_lock(path, || {
-        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .read(true)
+            .open(path)?;
+        let file_len = file.metadata()?.len();
+        if file_len > 0 {
+            let mut last = [0_u8; 1];
+            file.seek(SeekFrom::Start(file_len - 1))?;
+            file.read_exact(&mut last)?;
+            if last[0] != b'\n' {
+                // External edits may leave the file without a trailing newline.
+                // Separate the first appended rule from the previous line so a
+                // later reload sees the same canonical rules the hot snapshot
+                // already contains.
+                writeln!(file)?;
+            }
+        }
         for rule in rules {
             writeln!(file, "{rule}")?;
         }

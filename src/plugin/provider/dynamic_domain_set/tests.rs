@@ -111,6 +111,45 @@ async fn dynamic_domain_set_appends_and_matches() {
 }
 
 #[tokio::test]
+async fn dynamic_domain_set_append_preserves_unterminated_tail_rule() {
+    AppClock::start();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("learned.txt");
+    fs::write(&path, "full:one.example").expect("write unterminated rule");
+    let backend = Arc::new(DynamicDomainSetBackend::new(
+        "learned".to_string(),
+        test_config(path.clone()),
+    ));
+    backend.start().await.expect("backend should start");
+
+    backend
+        .append_rules_sync(
+            vec!["Two.Example.".to_string()],
+            DynamicDomainRuleKind::Full,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("append should succeed");
+
+    assert_eq!(
+        fs::read_to_string(&path).expect("file should exist"),
+        "full:one.example\nfull:two.example\n"
+    );
+    assert_eq!(
+        read_rule_file(&path).expect("reload parser should see separate rules"),
+        vec![
+            "full:one.example".to_string(),
+            "full:two.example".to_string()
+        ]
+    );
+    backend.reload_sync().await.expect("reload");
+    assert!(backend.contains_name(&test_name("one.example.")));
+    assert!(backend.contains_name(&test_name("two.example.")));
+
+    backend.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn dynamic_domain_set_invalid_regexp_append_does_not_poison_file() {
     AppClock::start();
     let dir = tempfile::tempdir().expect("tempdir");
