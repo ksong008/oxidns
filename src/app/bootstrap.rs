@@ -137,3 +137,34 @@ mod tests {
         stop(&assembly).await;
     }
 }
+
+#[cfg(all(test, not(feature = "api")))]
+mod tests {
+    use super::*;
+    use crate::config::types::{ApiConfig, ApiHttpConfig, LogConfig, RuntimeConfig};
+    use crate::core::app_clock::AppClock;
+
+    /// Without the `api` feature, a config that still sets `api.http` is a
+    /// version/feature mismatch that does not prevent the server from running:
+    /// `assemble` should warn and succeed (no management listener), not error.
+    #[tokio::test]
+    async fn assemble_warns_but_succeeds_when_api_http_set_without_feature() {
+        AppClock::start();
+        let assembly = assemble(
+            &Config {
+                include: Vec::new(),
+                runtime: RuntimeConfig::default(),
+                api: ApiConfig {
+                    http: Some(ApiHttpConfig::Listen("127.0.0.1:0".to_string())),
+                },
+                log: LogConfig::default(),
+                plugins: Vec::new(),
+            },
+            None,
+        )
+        .await
+        .expect("api.http without the api feature should warn, not fail");
+
+        stop(&assembly).await;
+    }
+}
