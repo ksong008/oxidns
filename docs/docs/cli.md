@@ -303,15 +303,21 @@ sudo oxidns upgrade apply --no-restart
 - `--asset <NAME|auto>`
   - Release asset 名称；`auto` 会按当前平台选择 archive。
   - 默认值：`auto`
+- `-c, --config <PATH>`
+  - 运行配置文件路径，用于在未显式指定 `--webui-dir` 时读取 `api.http.webui.root`。
+  - 未指定时，优先使用当前目录的 `config.yaml`；Linux 打包安装环境中，如果存在 `/etc/oxidns/config.yaml`，会用它推导 WebUI 路径。
+- `-d, --working-dir <DIR>`
+  - 运行期相对路径的基准目录，语义与 `start -d/--working-dir` 一致。
+  - 未指定且检测到 Linux 打包配置时，默认使用 `/var/lib/oxidns`；否则使用当前目录。
 - `--cache-dir <DIR>`
   - 升级文件缓存目录。
-  - 默认值：`./upgrade/cache`
+  - 默认值：`./upgrade-cache`
 - `--backup-dir <DIR>`
   - `apply` 替换前的二进制备份目录。
-  - 默认值：`./upgrade/backups`
+  - 默认值：`./upgrade-backups`
 - `--webui-dir <DIR>`
-  - `apply` 时安装 WebUI 静态资源的目录，应与 `api.http.webui.root` 一致。
-  - 默认值：`./webui`
+  - `apply` 时安装 WebUI 静态资源的目录；相对路径按 `-d/--working-dir` 解析，应与 `api.http.webui.root` 一致。
+  - 未指定时，优先从运行配置的 `api.http.webui.root` 推导；没有配置时使用 `./webui`。
 - `--skip-webui`
   - `apply` 时跳过 WebUI 目录升级，仅替换二进制文件。
 - `--no-restart`
@@ -337,6 +343,7 @@ sudo oxidns upgrade apply --no-restart
 - `apply` 默认只有检测到新版本才会更新；`--force` 会强制更新。
 - `apply` 在 Unix 平台会解包 `.tar.gz`、备份当前二进制并替换；Windows 会解包 `.zip`、备份并替换二进制，同样支持 WebUI 目录升级。
 - `apply` 默认在替换二进制后，将 archive 中的 `webui/` 目录备份并安装到 `--webui-dir`；`--skip-webui` 可跳过；archive 不含 `webui/` 时跳过且不影响二进制升级。
+- Debian 打包安装的默认布局中，直接运行 `sudo oxidns upgrade apply` 会按 `/etc/oxidns/config.yaml` 和 `/var/lib/oxidns` 推导 WebUI 目录；`/var/lib/oxidns/webui` 是符号链接时，会更新其指向的真实目录。
 - `apply` 成功后默认通过系统服务管理器重启服务；如果不想自动重启，传 `--no-restart`。
 - `apply` 成功后会询问是否清理缓存目录和备份目录，默认选择 `Y`。
 

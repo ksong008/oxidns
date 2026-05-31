@@ -23,7 +23,7 @@ fn main() -> Result<()> {
         Command::Service(service_opts) => service::run(service_opts),
         Command::Upgrade(upgrade_opts) => {
             let action = upgrade_opts.action.unwrap_or(cli::UpgradeAction::Apply);
-            let config = upgrade::UpgradeConfig::from_cli(&upgrade_opts);
+            let config = upgrade::UpgradeConfig::from_cli(&upgrade_opts)?;
             upgrade::run_cli(action, config)
         }
     }

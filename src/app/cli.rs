@@ -117,6 +117,14 @@ pub struct UpgradeOptions {
     #[command(subcommand)]
     pub action: Option<UpgradeAction>,
 
+    /// Path to runtime configuration used to infer the WebUI directory.
+    #[arg(short = 'c', long = "config", global = true)]
+    pub config: Option<PathBuf>,
+
+    /// Working directory for resolving runtime-relative paths.
+    #[arg(short = 'd', long = "working-dir", global = true)]
+    pub working_dir: Option<PathBuf>,
+
     /// Release tag to use, or latest.
     #[arg(long = "target", default_value = "latest", global = true)]
     pub target: String,
@@ -142,8 +150,8 @@ pub struct UpgradeOptions {
     pub backup_dir: PathBuf,
 
     /// Directory where the served WebUI assets are installed.
-    #[arg(long = "webui-dir", default_value = "./webui", global = true)]
-    pub webui_dir: PathBuf,
+    #[arg(long = "webui-dir", global = true)]
+    pub webui_dir: Option<PathBuf>,
 
     /// Skip upgrading the WebUI directory during apply.
     #[arg(long = "skip-webui", default_value_t = false, global = true)]
@@ -352,12 +360,14 @@ mod tests {
             cli.command,
             Command::Upgrade(UpgradeOptions {
                 action: Some(UpgradeAction::Apply),
+                config: None,
+                working_dir: None,
                 target: "v0.4.2".to_string(),
                 repository: "svenshi/oxidns".to_string(),
                 asset: "oxidns-x86_64-unknown-linux-gnu.tar.gz".to_string(),
                 cache_dir: PathBuf::from("./cache"),
                 backup_dir: PathBuf::from("./backups"),
-                webui_dir: PathBuf::from("./webui"),
+                webui_dir: None,
                 skip_webui: false,
                 no_restart: false,
                 allow_prerelease: true,
@@ -393,12 +403,14 @@ mod tests {
             cli.command,
             Command::Upgrade(UpgradeOptions {
                 action: None,
+                config: None,
+                working_dir: None,
                 target: "latest".to_string(),
                 repository: "svenshi/oxidns".to_string(),
                 asset: "auto".to_string(),
                 cache_dir: PathBuf::from("./upgrade-cache"),
                 backup_dir: PathBuf::from("./upgrade-backups"),
-                webui_dir: PathBuf::from("./webui"),
+                webui_dir: None,
                 skip_webui: false,
                 no_restart: false,
                 allow_prerelease: false,
@@ -409,6 +421,33 @@ mod tests {
                 github_token: None,
             })
         );
+    }
+
+    #[test]
+    fn parse_upgrade_accepts_runtime_path_context() {
+        let args = [
+            "oxidns",
+            "upgrade",
+            "-c",
+            "/etc/oxidns/config.yaml",
+            "-d",
+            "/var/lib/oxidns",
+            "--webui-dir",
+            "./webui",
+        ];
+
+        let cli = Cli::parse_from(args);
+        assert!(matches!(
+            cli.command,
+            Command::Upgrade(UpgradeOptions {
+                config: Some(config),
+                working_dir: Some(working_dir),
+                webui_dir: Some(webui_dir),
+                ..
+            }) if config.as_path() == std::path::Path::new("/etc/oxidns/config.yaml")
+                && working_dir.as_path() == std::path::Path::new("/var/lib/oxidns")
+                && webui_dir.as_path() == std::path::Path::new("./webui")
+        ));
     }
 
     #[test]
