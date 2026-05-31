@@ -90,7 +90,7 @@ regex = "1.12.2"
 cronexpr = "1.5.0"
 fast-socks5 = "1.0.0"
 mikrotik-rs = "0.8.0"
-rusqlite = { version = "0.39.0", features = ["bundled"] }
+rusqlite = { version = "0.40.0", features = ["bundled"] }
 
 # Service management
 service-manager = "0.11.0"
@@ -101,7 +101,7 @@ ripset = { package = "oxidns-ripset", version = "0.1.2", path = "crates/ripset" 
 
 [target.'cfg(windows)'.dependencies]
 zip = "8"
-windows-service = "0.6"
+windows-service = "0.8"
 
 
 [features]
