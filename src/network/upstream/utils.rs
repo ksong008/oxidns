@@ -78,6 +78,7 @@ use crate::network::upstream::{ConnectionInfo, ConnectionType};
 /// connection vulnerable to man-in-the-middle attacks. Only use this for
 /// testing!
 #[cfg(feature = "_tls-client")]
+#[allow(dead_code)]
 #[inline]
 pub(crate) async fn connect_tls(
     tcp_stream: TcpStream,
@@ -184,6 +185,7 @@ pub fn close_conns<C: Connection>(conns: &Vec<Arc<C>>) {
 
 /// Content type header for DNS-over-HTTPS (RFC 8484 Section 6)
 #[cfg(feature = "_http-client")]
+#[allow(dead_code)]
 const DNS_HEADER_VALUE: HeaderValue = HeaderValue::from_static("application/dns-message");
 
 /// Build a DoH GET request with base64url-encoded DNS query
@@ -203,6 +205,7 @@ const DNS_HEADER_VALUE: HeaderValue = HeaderValue::from_static("application/dns-
 /// # Example URI
 /// `https://dns.example.com/dns-query?dns=AAABAAABAAAAAAAAA3d3dwdleGFtcGxlA2NvbQAAAQAB`
 #[cfg(feature = "_http-client")]
+#[allow(dead_code)]
 #[inline]
 pub fn build_dns_get_request(mut uri: String, buf: &[u8], version: Version) -> Request<()> {
     // Encode DNS message using base64url without padding (RFC 4648 Section 5)
@@ -234,6 +237,7 @@ pub fn build_dns_get_request(mut uri: String, buf: &[u8], version: Version) -> R
 /// - Memory copies when buffer grows
 /// - Potential performance hiccups from allocator
 #[cfg(feature = "_http-client")]
+#[allow(dead_code)]
 #[inline]
 pub fn get_cap_buf_with_context_len<T>(response: &mut Response<T>) -> BytesMut {
     let capacity = response
@@ -267,6 +271,7 @@ pub fn get_cap_buf_with_context_len<T>(response: &mut Response<T>) -> BytesMut {
 /// Pre-reserves 512 bytes to accommodate the base64-encoded DNS query without
 /// reallocation
 #[cfg(feature = "_http-client")]
+#[allow(dead_code)]
 pub fn build_doh_request_uri(connection_info: &ConnectionInfo) -> String {
     let mut uri = if connection_info.port != ConnectionType::DoH.default_port() {
         // Include port in URI for non-standard ports

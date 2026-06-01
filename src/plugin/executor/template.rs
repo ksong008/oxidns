@@ -48,6 +48,7 @@ enum TemplateSegment {
     Builtin(&'static str),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) enum JsonTemplateValue {
     Null,
@@ -126,6 +127,7 @@ impl Template {
     }
 }
 
+#[allow(dead_code)]
 impl JsonTemplateValue {
     pub(crate) fn compile(value: JsonValue) -> Result<Self> {
         match value {

@@ -485,6 +485,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "plugin-upgrade")]
     #[test]
     fn parse_upgrade_accepts_runtime_path_context() {
         let args = [

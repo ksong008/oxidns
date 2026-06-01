@@ -1651,19 +1651,24 @@ mod tests {
 
         use crate::app::cli::{Cli, Command};
 
+        #[cfg(windows)]
+        let webui_dir_arg = r"C:\tmp\oxidns-webui";
+        #[cfg(not(windows))]
+        let webui_dir_arg = "/tmp/oxidns-webui";
+
         let cli = Cli::parse_from([
             "oxidns",
             "upgrade",
             "apply",
             "--webui-dir",
-            "/tmp/oxidns-webui",
+            webui_dir_arg,
             "--skip-webui",
         ]);
         let Command::Upgrade(opts) = cli.command else {
             panic!("expected upgrade command");
         };
         let config = UpgradeConfig::from_cli(&opts).unwrap();
-        assert_eq!(config.webui_dir, PathBuf::from("/tmp/oxidns-webui"));
+        assert_eq!(config.webui_dir, PathBuf::from(webui_dir_arg));
         assert!(config.skip_webui);
     }
 
