@@ -6,9 +6,9 @@
 //! Split into two halves so a build that only needs one side does not drag in
 //! the other's dependencies:
 //!
-//! - [`client`] (`_tls-client`): pre-built client `ClientConfig`s for DoT / DoH
-//!   / DoQ upstreams, validated against the bundled `webpki-roots`.
-//! - [`server`] (`_tls-server`): certificate / key loading for DoT / DoH / DoQ
+//! - `client` (`_tls-client`): pre-built client `ClientConfig`s for DoT / DoH /
+//!   DoQ upstreams, validated against the bundled `webpki-roots`.
+//! - `server` (`_tls-server`): certificate / key loading for DoT / DoH / DoQ
 //!   servers and the management API.
 //!
 //! The default crypto provider installation is shared by both halves and lives
