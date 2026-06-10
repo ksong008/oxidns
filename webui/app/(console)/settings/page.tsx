@@ -34,7 +34,6 @@ import {
   Cpu,
   FileCode2,
   Globe,
-  LogOut,
   PlugZap,
   RefreshCw,
   ScrollText,
@@ -46,7 +45,6 @@ export default function SettingsPage() {
   const serverConfig = useAuthStore((s) => s.serverConfig);
   const setServerConfig = useAuthStore((s) => s.setServerConfig);
   const connect = useAuthStore((s) => s.connect);
-  const logout = useAuthStore((s) => s.logout);
   const isConnected = useAuthStore((s) => s.isConnected);
   const isConnecting = useAuthStore((s) => s.isConnecting);
   const connectionError = useAuthStore((s) => s.connectionError);
@@ -62,6 +60,7 @@ export default function SettingsPage() {
   const checkForUpdates = useUpdateStore((s) => s.checkForUpdates);
   const triggerUpgrade = useUpdateStore((s) => s.triggerUpgrade);
   const [copiedCmd, setCopiedCmd] = useState(false);
+  const [tokenPersistenceHelpOpen, setTokenPersistenceHelpOpen] = useState(false);
 
   const configModel = useAppStore((s) => s.configModel);
   const configPath = useAppStore((s) => s.configPath);
@@ -181,6 +180,9 @@ export default function SettingsPage() {
     }
     if (upgradeConfig.socks5.trim()) {
       parts.push("--socks5", upgradeConfig.socks5.trim());
+    }
+    if (upgradeConfig.githubToken.trim()) {
+      parts.push("--github-token", "<GITHUB_TOKEN>");
     }
     if (upgradeConfig.allowPrerelease) {
       parts.push("--allow-prerelease");
@@ -1104,16 +1106,72 @@ export default function SettingsPage() {
                   <Field>
                     <FieldLabel>Socks5 代理</FieldLabel>
                     <p className="text-xs text-muted-foreground mb-2">
-                      下载时使用的 SOCKS5 代理，留空不使用
+                      下载时使用的 SOCKS5 代理，不需要协议前缀；支持用户名和密码
                     </p>
                     <Input
                       value={upgradeConfig.socks5}
                       onChange={(e) => setUpgradeConfig({ socks5: e.target.value })}
-                      placeholder="socks5://127.0.0.1:1080"
+                      placeholder="127.0.0.1:1080 或 user:pass@127.0.0.1:1080"
+                      className="font-mono"
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel>GitHub Token（可选）</FieldLabel>
+                    <p className="text-xs text-muted-foreground mb-2">
+                      用于提高 API 限额或访问私有仓库，留空则匿名请求
+                    </p>
+                    <Input
+                      value={upgradeConfig.githubToken}
+                      onChange={(e) => setUpgradeConfig({ githubToken: e.target.value })}
+                      type="password"
+                      placeholder="ghp_... / github_pat_..."
+                      autoComplete="off"
+                      autoCapitalize="none"
+                      spellCheck={false}
                       className="font-mono"
                     />
                   </Field>
                 </div>
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium">持久化保存 Token</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      关闭时仅在当前页面会话中使用，刷新后清空
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      aria-expanded={tokenPersistenceHelpOpen}
+                      onClick={() => setTokenPersistenceHelpOpen((open) => !open)}
+                    >
+                      <CircleAlert data-icon="inline-start" />
+                      保存风险
+                    </Button>
+                    <Switch
+                      aria-label="持久化保存 GitHub Token"
+                      checked={upgradeConfig.persistGithubToken}
+                      onCheckedChange={(v) => setUpgradeConfig({ persistGithubToken: v })}
+                    />
+                  </div>
+                </div>
+                {tokenPersistenceHelpOpen && (
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+                    <p className="font-medium">Token 保存建议</p>
+                    <p className="mt-1">
+                      可持久化：个人专用设备、本机或可信内网控制台、浏览器用户配置受系统账号保护，并且使用
+                      HTTPS 或可信本机连接。
+                    </p>
+                    <p className="mt-1">
+                      不建议持久化：公用电脑、共享浏览器账号、远程代管或临时运维环境、明文 HTTP 跨网络访问、多人可读取浏览器数据的主机。
+                    </p>
+                    <p className="mt-1">
+                      无论是否保存，Token 都会随检查/升级请求发送到当前后端；建议使用 fine-grained token，并仅授予目标仓库读取权限。
+                    </p>
+                  </div>
+                )}
                 <div className="flex flex-wrap gap-6">
                   <div className="flex items-center justify-between gap-4">
                     <div>
@@ -1146,7 +1204,7 @@ export default function SettingsPage() {
               <div className="space-y-2">
                 <p className="text-sm font-medium">等效 CLI 命令</p>
                 <p className="text-xs text-muted-foreground">
-                  在服务器上以 root 或有权限的用户执行，将自动下载并替换当前二进制文件
+                  在服务器上以 root 或有权限的用户执行，将自动下载并替换当前二进制文件；为避免泄露，命令中仅显示 Token 占位符
                 </p>
                 <div className="flex items-center gap-2 rounded-lg border bg-muted/50 px-3 py-2">
                   <code className="flex-1 truncate font-mono text-xs">
