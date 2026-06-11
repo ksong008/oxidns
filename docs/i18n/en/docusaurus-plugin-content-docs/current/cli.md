@@ -11,6 +11,7 @@ Available top-level commands:
 
 - `start`
 - `check`
+- `build-info`
 - `export-dat`
 - `service`
 - `upgrade`
@@ -23,6 +24,7 @@ Available top-level commands:
 | Start in the foreground | `oxidns start -c config.yaml` |
 | Temporarily enable debug logging | `oxidns start -c config.yaml -l debug` |
 | Print the plugin dependency graph | `oxidns check -c config.yaml --graph` |
+| Inspect compiled binary capabilities | `oxidns build-info` |
 | Install as a system service | `sudo oxidns service install -d /var/lib/oxidns -c /etc/oxidns/config.yaml` |
 | Check for a new release | `oxidns upgrade check` |
 | Export rules from a dat file | `oxidns export-dat --file ./rules/geosite.dat --kind geosite --selector cn --out-dir ./rules/exported` |
@@ -40,6 +42,7 @@ Show help for a specific subcommand:
 ```bash
 oxidns start --help
 oxidns check --help
+oxidns build-info --help
 oxidns export-dat --help
 oxidns service --help
 oxidns upgrade --help
@@ -111,6 +114,34 @@ Behavior:
 - On success, exits with code `0` and prints a short success line.
 - With `--graph`, it also prints a plain-text dependency graph in plugin initialization order.
 - On failure, exits non-zero and prints the validation error.
+
+## `build-info`
+
+Prints the compile-time capabilities of the current `oxidns` binary.
+
+Typical usage:
+
+```bash
+oxidns build-info
+```
+
+Behavior:
+
+- Does not read a configuration file, start the runtime, or bind any ports.
+- Prints formatted JSON.
+- The output includes:
+  - `version`: current package version.
+  - `bundle`: primary build bundle for this binary: `minimal`, `standard`, `full`, or `custom`.
+  - `enabled_bundles`: bundle features compiled into the binary.
+  - `enabled_features`: public Cargo features compiled into the binary.
+  - `supported_plugins`: server, executor, matcher, and provider plugin types supported by this binary.
+- The returned capability object matches the `build` field returned by the management API `GET /api/build`.
+
+Common use cases:
+
+- Confirm whether the installed binary is `minimal`, `standard`, `full`, or a custom build.
+- Check whether a protocol, plugin, or the `upgrade` subcommand is compiled into the current binary.
+- Compare capabilities before and after custom builds, package validation, or upgrades.
 
 ## `export-dat`
 

@@ -11,6 +11,7 @@ sidebar_position: 3
 
 - `start`
 - `check`
+- `build-info`
 - `export-dat`
 - `service`
 - `upgrade`
@@ -23,6 +24,7 @@ sidebar_position: 3
 | 前台启动 | `oxidns start -c config.yaml` |
 | 临时开启调试日志 | `oxidns start -c config.yaml -l debug` |
 | 查看插件依赖图 | `oxidns check -c config.yaml --graph` |
+| 查看当前二进制编译能力 | `oxidns build-info` |
 | 安装系统服务 | `sudo oxidns service install -d /var/lib/oxidns -c /etc/oxidns/config.yaml` |
 | 检查新版本 | `oxidns upgrade check` |
 | 从 dat 导出规则文件 | `oxidns export-dat --file ./rules/geosite.dat --kind geosite --selector cn --out-dir ./rules/exported` |
@@ -40,6 +42,7 @@ oxidns --help
 ```bash
 oxidns start --help
 oxidns check --help
+oxidns build-info --help
 oxidns export-dat --help
 oxidns service --help
 oxidns upgrade --help
@@ -111,6 +114,34 @@ oxidns check -c config.yaml --graph
 - 校验成功时返回退出码 `0`，并输出简短成功信息。
 - 传入 `--graph` 时，会额外按插件初始化顺序输出纯文本依赖图。
 - 校验失败时返回非零退出码，并输出具体错误原因。
+
+## `build-info`
+
+输出当前 `oxidns` 二进制的编译期能力信息。
+
+典型用法：
+
+```bash
+oxidns build-info
+```
+
+行为说明：
+
+- 不读取配置文件，不启动运行时，也不会绑定端口。
+- 输出格式为格式化 JSON。
+- 输出内容包括：
+  - `version`：当前包版本。
+  - `bundle`：当前二进制的主编译组合包，可能为 `minimal`、`standard`、`full` 或 `custom`。
+  - `enabled_bundles`：编译进当前二进制的 bundle feature。
+  - `enabled_features`：公开的 Cargo feature 列表。
+  - `supported_plugins`：当前二进制支持的 server、executor、matcher 和 provider 插件类型。
+- 返回的编译能力对象与管理 API `GET /api/build` 响应中的 `build` 字段一致。
+
+适用场景：
+
+- 确认当前安装的是 `minimal`、`standard`、`full` 还是自定义构建。
+- 排查某个协议、插件或 `upgrade` 子命令是否被编译进当前二进制。
+- 在自定义构建、发布包验证或升级前后对比能力差异。
 
 ## `export-dat`
 
