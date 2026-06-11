@@ -1639,6 +1639,27 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         required: true,
       },
       {
+        key: "connect_timeout",
+        description: "建立 RouterOS API 连接时的等待上限，单位秒。",
+        label: "连接超时",
+        type: "number",
+        default: 5,
+      },
+      {
+        key: "send_timeout",
+        description: "发送单个 RouterOS API 命令时的等待上限，单位秒。",
+        label: "发送超时",
+        type: "number",
+        default: 5,
+      },
+      {
+        key: "receive_timeout",
+        description: "等待下一段 RouterOS API 响应数据的上限，单位秒。",
+        label: "接收超时",
+        type: "number",
+        default: 5,
+      },
+      {
         key: "async",
         description: "控制地址写入行为是否采用异步方式。",
         label: "异步提交",

@@ -1406,6 +1406,18 @@ export const zhCNPluginDefined = {
           label: "密码",
           description: "指定 RouterOS API 登录密码。",
         },
+        connect_timeout: {
+          label: "连接超时",
+          description: "建立 RouterOS API 连接时的等待上限，单位秒。",
+        },
+        send_timeout: {
+          label: "发送超时",
+          description: "发送单个 RouterOS API 命令时的等待上限，单位秒。",
+        },
+        receive_timeout: {
+          label: "接收超时",
+          description: "等待下一段 RouterOS API 响应数据的上限，单位秒。",
+        },
         async: {
           label: "异步提交",
           description: "控制地址写入行为是否采用异步方式。",

@@ -347,6 +347,12 @@ export const enUSDocs = {
       "- Type: `string`; Required: Yes; Default: None\n- Function: Specify the RouterOS API login username. This account needs to have permission to read and maintain the target `address-list`.\n- Configuration suggestions: It is recommended to create a dedicated account for this plug-in to isolate the scope of permissions and audit records.",
     password:
       "- Type: `string`; Required: Yes; Default: None\n- Function: Specify the RouterOS API login password. Plugin initialization, reconnection, and background synchronization all rely on this credential.\n- Note: Direct exposure of real passwords in public repositories or shared samples should be avoided.",
+    connect_timeout:
+      "- Type: `u64`; Required: No; Default: `5`\n- Function: Specify the maximum wait time, in seconds, for establishing a RouterOS API connection.\n- Note: Must be greater than `0`. Increase it if the management network or RouterOS API occasionally responds slowly.",
+    send_timeout:
+      "- Type: `u64`; Required: No; Default: `5`\n- Function: Specify the maximum wait time, in seconds, for sending one RouterOS API command.\n- Note: Must be greater than `0`. The default is usually sufficient.",
+    receive_timeout:
+      "- Type: `u64`; Required: No; Default: `5`\n- Function: Specify the maximum wait time, in seconds, for the next chunk of RouterOS API response data.\n- Configuration recommendation: Prefer a dedicated, size-controlled `address-list` for OxiDNS. Avoid connecting the plugin to an existing large shared list. Increase this value, for example to `30` or `60`, only when slow legacy list queries or a slow RouterOS management plane cannot be avoided.",
     async:
       "- Type: `bool`; required: no; default value: `true`\n- Function: Control whether the address writing behavior is asynchronous. When enabled, the DNS response path is only responsible for delivery tasks, and the background manager completes the interaction with RouterOS.\n- Impact: Asynchronous mode helps reduce the risk of request path blocking; after closing, it will be changed to synchronous submission, which is more suitable for scenarios that require immediate confirmation of submission results.",
     address_list4:

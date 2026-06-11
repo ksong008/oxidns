@@ -2376,6 +2376,12 @@ old-static.example.com static.example.net
     username: "api-user"
     # API 密码
     password: "secret"
+    # RouterOS API 连接超时，单位秒
+    connect_timeout: 5
+    # RouterOS API 发送命令超时，单位秒
+    send_timeout: 5
+    # RouterOS API 接收响应超时，单位秒；仅在存量慢查询场景按需调大
+    receive_timeout: 30
     # 异步提交，避免阻塞 DNS 主路径
     async: true
     # A 记录写入的 address-list
@@ -2424,6 +2430,24 @@ old-static.example.com static.example.net
 - 类型：`string`；必填：是；默认值：无
 - 作用：指定 RouterOS API 登录密码。插件初始化、重连和后台同步均依赖该凭据。
 - 注意事项：应避免在公开仓库或共享示例中直接暴露真实口令。
+
+#### `connect_timeout`
+
+- 类型：`u64`；必填：否；默认值：`5`
+- 作用：指定建立 RouterOS API 连接时的等待上限，单位为秒。
+- 注意事项：必须大于 `0`。网络链路较慢或 RouterOS 管理面偶发繁忙时，可按需调大。
+
+#### `send_timeout`
+
+- 类型：`u64`；必填：否；默认值：`5`
+- 作用：指定发送单个 RouterOS API 命令时的等待上限，单位为秒。
+- 注意事项：必须大于 `0`。通常保持默认即可。
+
+#### `receive_timeout`
+
+- 类型：`u64`；必填：否；默认值：`5`
+- 作用：指定等待下一段 RouterOS API 响应数据的上限，单位为秒。
+- 配置建议：建议为 OxiDNS 使用专用且规模可控的 `address-list`，不建议接入已有的大型共享列表。只有在存量环境无法避免慢列表查询或 RouterOS 管理面响应较慢时，才考虑将该值调大，例如 `30` 或 `60`。
 
 #### `async`
 
@@ -2496,13 +2520,14 @@ old-static.example.com static.example.net
 ### 行为说明
 
 - 插件本身不改 DNS 响应。
+- 启动阶段不会等待 RouterOS address-list 扫描完成；初始连通性验证和常驻项同步会交给后台 manager 执行，失败只记录日志，不阻塞 DNS 服务启动或动态观察写入。
 - 正向阶段只透传。
 - 回程阶段：
   - 从 `NOERROR` 响应中提取 A/AAAA。
   - 去重并保留最大 TTL。
   - 根据异步或同步模式投递给后台 manager。
 - manager 负责：
-  - 初始连通性验证
+  - 后台初始连通性验证
   - 动态项刷新
   - 持久项一致性维护
   - 关闭清理
@@ -2516,6 +2541,7 @@ old-static.example.com static.example.net
 <Admonition type="note" title="注意事项">
 
 - 至少需要 `address_list4` 或 `address_list6` 之一。
+- 建议使用 OxiDNS 专用 `address-list`，避免接入大型共享列表，以降低 RouterOS 管理面扫描成本。
 - `comment_prefix` 与插件 `tag` 不能包含 `;` 或 `=`。
 - 同步模式不会改变 DNS 应答本身，即使 RouterOS 写入失败也会保留 DNS 结果。
 

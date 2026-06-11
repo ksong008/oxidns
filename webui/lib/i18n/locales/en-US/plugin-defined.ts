@@ -1554,6 +1554,21 @@ export const enUSPluginDefined = {
           label: "password",
           description: "Specify the RouterOS API login password.",
         },
+        connect_timeout: {
+          label: "Connection timeout",
+          description:
+            "Maximum wait time for establishing a RouterOS API connection, in seconds.",
+        },
+        send_timeout: {
+          label: "Send timeout",
+          description:
+            "Maximum wait time for sending one RouterOS API command, in seconds.",
+        },
+        receive_timeout: {
+          label: "Receive timeout",
+          description:
+            "Maximum wait time for the next RouterOS API response chunk, in seconds.",
+        },
         async: {
           label: "Asynchronous submission",
           description:
