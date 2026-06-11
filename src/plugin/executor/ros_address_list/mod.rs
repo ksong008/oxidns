@@ -794,6 +794,7 @@ mod tests {
         next_id: u64,
         fail_next_upsert: bool,
         fail_healthcheck: bool,
+        list_entries_delay: Option<Duration>,
         upsert_v4: u64,
         upsert_v6: u64,
         update_ops: u64,
@@ -838,6 +839,15 @@ mod tests {
             list4: Option<&str>,
             list6: Option<&str>,
         ) -> Result<Vec<RouterListEntry>> {
+            let delay = self
+                .state
+                .lock()
+                .map_err(|_| DnsError::plugin("mock api lock poisoned"))?
+                .list_entries_delay;
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
+            }
+
             let state = self
                 .state
                 .lock()
@@ -1635,6 +1645,43 @@ persistent:
             api.entry_count() > 0
         })
         .await;
+        let _ = executor.destroy().await;
+    }
+
+    #[tokio::test]
+    async fn startup_reconcile_scan_does_not_delay_sync_observation() {
+        let api = Arc::new(MockMikrotikApi::default());
+        {
+            let mut state = api.state.lock().unwrap();
+            state.list_entries_delay = Some(Duration::from_secs(1));
+        }
+        let mut executor = build_executor_for_test(
+            "mk_sync_startup",
+            false,
+            false,
+            Some("oxidns_ipv4"),
+            None,
+            api.clone() as Arc<dyn MikrotikApi>,
+        );
+        executor.init_for_test().await.unwrap();
+
+        let mut ctx = make_context();
+        ctx.set_response(response_with_records(vec![a_record(
+            Ipv4Addr::new(14, 14, 14, 14),
+            300,
+        )]));
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            executor.execute_with_next(&mut ctx, None),
+        )
+        .await
+        .expect("sync observation should not wait for startup reconcile scan")
+        .unwrap();
+
+        {
+            let state = api.state.lock().unwrap();
+            assert!(state.upsert_v4 >= 1);
+        }
         let _ = executor.destroy().await;
     }
 

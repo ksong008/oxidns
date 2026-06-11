@@ -380,6 +380,8 @@ pub(super) struct AddressListManager {
     /// Lightweight local cache that suppresses redundant dynamic refresh
     /// writes.
     dynamic_refresh_cache: AHashMap<AddressListKey, DynamicRefreshState>,
+    /// Currently running background reconcile task, if any.
+    reconcile_handle: Option<JoinHandle<()>>,
     /// One-time startup guard.
     initialized: bool,
 }
@@ -390,6 +392,7 @@ impl AddressListManager {
             api,
             persistent_items: cfg.persistent_items.clone(),
             dynamic_refresh_cache: AHashMap::new(),
+            reconcile_handle: None,
             cfg,
             initialized: false,
         }
@@ -567,6 +570,36 @@ impl AddressListManager {
         Ok(())
     }
 
+    fn spawn_background_reconcile(&mut self, tag: String) {
+        if self
+            .reconcile_handle
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
+        {
+            debug!(
+                plugin = %tag,
+                "ros_address_list reconcile already running, skipping duplicate request"
+            );
+            return;
+        }
+
+        let api = self.api.clone();
+        let mut cfg = self.cfg.clone();
+        cfg.persistent_items = self.persistent_items.clone();
+        self.reconcile_handle = Some(tokio::spawn(async move {
+            let mut manager = AddressListManager::new(api, cfg);
+            if let Err(e) = manager.reconcile().await {
+                warn!(
+                    plugin = %tag,
+                    err = %e,
+                    "ros_address_list background reconcile failed"
+                );
+            } else {
+                debug!(plugin = %tag, "ros_address_list background reconcile completed");
+            }
+        }));
+    }
+
     async fn observe_domain_inner(
         &mut self,
         domain: String,
@@ -715,6 +748,11 @@ impl AddressListManager {
     }
 
     pub(super) async fn shutdown(&mut self, cleanup: bool) -> Result<()> {
+        if let Some(handle) = self.reconcile_handle.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+
         if !cleanup {
             self.dynamic_refresh_cache.clear();
             return Ok(());
@@ -874,15 +912,7 @@ async fn run_manager_worker(
                 }
             }
             ManagerCommand::Reconcile => {
-                if let Err(e) = manager.reconcile().await {
-                    warn!(
-                        plugin = %tag,
-                        err = %e,
-                        "ros_address_list periodic reconcile failed"
-                    );
-                } else {
-                    debug!(plugin = %tag, "ros_address_list reconcile completed");
-                }
+                manager.spawn_background_reconcile(tag.clone());
             }
             ManagerCommand::PruneDynamicCache => {
                 if let Err(e) = manager.prune_dynamic_cache_now().await {
