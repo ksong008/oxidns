@@ -858,14 +858,29 @@ export const zhCNWebui = {
     bundleStandard: "standard — 标准版",
     bundleMinimal: "minimal — 精简版",
     socks5Proxy: "Socks5 代理",
-    socks5ProxyDesc: "下载时使用的 SOCKS5 代理，留空不使用",
+    socks5ProxyDesc:
+      "下载时使用的 SOCKS5 代理，不需要协议前缀；支持用户名和密码",
+    socks5ProxyPlaceholder: "127.0.0.1:1080 或 user:pass@127.0.0.1:1080",
+    githubToken: "GitHub Token（可选）",
+    githubTokenDesc: "用于提高 API 限额或访问私有仓库，留空则匿名请求",
+    githubTokenPlaceholder: "ghp_... / github_pat_...",
+    persistGithubToken: "持久化保存 Token",
+    persistGithubTokenDesc: "关闭时仅在当前页面会话中使用，刷新后清空",
+    tokenSaveRisk: "保存风险",
+    tokenPersistenceAdviceTitle: "Token 保存建议",
+    tokenPersistenceSafe:
+      "可持久化：个人专用设备、本机或可信内网控制台、浏览器用户配置受系统账号保护，并且使用 HTTPS 或可信本机连接。",
+    tokenPersistenceUnsafe:
+      "不建议持久化：公用电脑、共享浏览器账号、远程代管或临时运维环境、明文 HTTP 跨网络访问、多人可读取浏览器数据的主机。",
+    tokenPersistenceScope:
+      "无论是否保存，Token 都会随检查/升级请求发送到当前后端；建议使用 fine-grained token，并仅授予目标仓库读取权限。",
     allowPrerelease: "允许预发布版本",
     allowPrereleaseDesc: "包含 alpha/beta/rc 等预发布标签",
     autoCheck: "自动检查更新",
     autoCheckDesc: "每次连接后台时自动查询最新版本",
     cliCommand: "等效 CLI 命令",
     cliCommandDesc:
-      "在服务器上以 root 或有权限的用户执行，将自动下载并替换当前二进制文件",
+      "在服务器上以 root 或有权限的用户执行，将自动下载并替换当前二进制文件；为避免泄露，命令中仅显示 Token 占位符",
     copyCommand: "复制命令",
   },
 } as const;

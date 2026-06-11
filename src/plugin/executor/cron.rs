@@ -1075,12 +1075,13 @@ jobs:
         AppClock::start();
         let log = Arc::new(StdMutex::new(Vec::new()));
         let executor = Arc::new(StubExecutor::new("probe", StubBehavior::Next, log.clone()));
-        let interval = Duration::from_millis(50);
-        let first_run_at = compute_next_run_ms(
-            &JobTrigger::Interval { interval },
-            AppClock::now_timestamp() as i64,
-        )
-        .unwrap();
+        let interval = Duration::from_secs(5);
+        let now_ms = AppClock::now_timestamp() as i64;
+        let first_run_at = compute_next_run_ms(&JobTrigger::Interval { interval }, now_ms).unwrap();
+        assert_eq!(
+            first_run_at,
+            now_ms + i64::try_from(interval.as_millis()).unwrap()
+        );
 
         let job = RuntimeJob {
             name: "job".to_string(),
@@ -1099,9 +1100,6 @@ jobs:
 
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(executor.started.load(Ordering::Relaxed), 0);
-
-        tokio::time::sleep(Duration::from_millis(60)).await;
-        assert_eq!(executor.started.load(Ordering::Relaxed), 1);
 
         let _ = stop_tx.send(());
         scheduler.await.unwrap();

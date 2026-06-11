@@ -894,7 +894,23 @@ export const enUSWebui = {
     bundleMinimal: "minimal — minimal edition",
     socks5Proxy: "SOCKS5 Proxy",
     socks5ProxyDesc:
-      "SOCKS5 proxy for downloading. Leave empty to not use one.",
+      "SOCKS5 proxy used for downloads. Do not include a protocol prefix; username and password are supported.",
+    socks5ProxyPlaceholder: "127.0.0.1:1080 or user:pass@127.0.0.1:1080",
+    githubToken: "GitHub Token (optional)",
+    githubTokenDesc:
+      "Improves API rate limits or grants access to private repositories. Leave empty for anonymous requests.",
+    githubTokenPlaceholder: "ghp_... / github_pat_...",
+    persistGithubToken: "Persist token",
+    persistGithubTokenDesc:
+      "When off, the token is used only for this page session and is cleared on refresh.",
+    tokenSaveRisk: "Storage risk",
+    tokenPersistenceAdviceTitle: "Token storage guidance",
+    tokenPersistenceSafe:
+      "Reasonable to persist on a personal device, localhost or trusted intranet console, with browser profile data protected by the OS account and HTTPS or a trusted local connection.",
+    tokenPersistenceUnsafe:
+      "Do not persist on shared computers, shared browser profiles, managed or temporary operations environments, plaintext HTTP across a network, or hosts where multiple people can read browser data.",
+    tokenPersistenceScope:
+      "Whether persisted or not, the token is sent to the current backend during check and upgrade requests. Prefer a fine-grained token with read-only access to the target repository.",
     allowPrerelease: "Allow Pre-release Versions",
     allowPrereleaseDesc:
       "Includes pre-release tags such as alpha, beta, and rc",
@@ -903,7 +919,7 @@ export const enUSWebui = {
       "Automatically check for the latest version on each backend connection",
     cliCommand: "Equivalent CLI Command",
     cliCommandDesc:
-      "Run on the server as root or a privileged user. Automatically downloads and replaces the current binary.",
+      "Run on the server as root or a privileged user. Automatically downloads and replaces the current binary. To avoid leaks, the command shows only a token placeholder.",
     copyCommand: "Copy command",
   },
 } as const satisfies LocaleResourceShape<typeof zhCNWebui>;

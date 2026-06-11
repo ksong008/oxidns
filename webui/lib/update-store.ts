@@ -12,6 +12,8 @@ export interface UpgradeConfig {
   repository: string;
   bundle: UpgradeBundle;
   socks5: string;
+  githubToken: string;
+  persistGithubToken: boolean;
   allowPrerelease: boolean;
   autoCheck: boolean;
 }
@@ -20,8 +22,14 @@ export const DEFAULT_UPGRADE_CONFIG: UpgradeConfig = {
   repository: "svenshi/oxidns",
   bundle: "auto",
   socks5: "",
+  githubToken: "",
+  persistGithubToken: false,
   allowPrerelease: false,
   autoCheck: true,
+};
+
+type PersistedUpgradeConfig = Omit<UpgradeConfig, "githubToken"> & {
+  githubToken?: string;
 };
 
 export interface UpdateInfo {
@@ -51,9 +59,16 @@ function loadUpgradeConfig(): UpgradeConfig {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
+      const parsed = JSON.parse(stored) as Partial<UpgradeConfig>;
+      const persistGithubToken = parsed.persistGithubToken === true;
       return {
         ...DEFAULT_UPGRADE_CONFIG,
-        ...(JSON.parse(stored) as Partial<UpgradeConfig>),
+        ...pickPersistedUpgradeConfig(parsed),
+        persistGithubToken,
+        githubToken:
+          persistGithubToken && typeof parsed.githubToken === "string"
+            ? parsed.githubToken
+            : "",
       };
     }
   } catch {
@@ -64,10 +79,36 @@ function loadUpgradeConfig(): UpgradeConfig {
 
 function saveUpgradeConfig(config: UpgradeConfig): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    // Persist the token only after explicit user opt-in.
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify(pickPersistedUpgradeConfig(config)),
+    );
   } catch {
     // ignore
   }
+}
+
+function pickPersistedUpgradeConfig(
+  config: Partial<UpgradeConfig>,
+): Partial<PersistedUpgradeConfig> {
+  return {
+    ...(config.repository !== undefined
+      ? { repository: config.repository }
+      : {}),
+    ...(config.bundle !== undefined ? { bundle: config.bundle } : {}),
+    ...(config.socks5 !== undefined ? { socks5: config.socks5 } : {}),
+    ...(config.persistGithubToken !== undefined
+      ? { persistGithubToken: config.persistGithubToken }
+      : {}),
+    ...(config.persistGithubToken && config.githubToken !== undefined
+      ? { githubToken: config.githubToken }
+      : {}),
+    ...(config.allowPrerelease !== undefined
+      ? { allowPrerelease: config.allowPrerelease }
+      : {}),
+    ...(config.autoCheck !== undefined ? { autoCheck: config.autoCheck } : {}),
+  };
 }
 
 export const useUpdateStore = create<UpdateState>((set, get) => ({
@@ -96,6 +137,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
         repository: upgradeConfig.repository,
         bundle: upgradeConfig.bundle,
         socks5: upgradeConfig.socks5 || undefined,
+        githubToken: upgradeConfig.githubToken.trim() || undefined,
         allowPrerelease: upgradeConfig.allowPrerelease,
       });
       set({
@@ -129,6 +171,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
         repository: upgradeConfig.repository,
         bundle: upgradeConfig.bundle,
         socks5: upgradeConfig.socks5 || undefined,
+        githubToken: upgradeConfig.githubToken.trim() || undefined,
         allowPrerelease: upgradeConfig.allowPrerelease,
       });
       // The server-side upgrade runs in the background; after the 202 response,

@@ -36,6 +36,8 @@ pub(super) struct ClearHistoryResult {
 }
 
 pub(super) type ClearHistoryReply = std::result::Result<ClearHistoryResult, String>;
+#[cfg(test)]
+pub(super) type FlushReply = std::result::Result<(), String>;
 
 #[derive(Debug)]
 pub(super) enum WriterCommand {
@@ -45,6 +47,10 @@ pub(super) enum WriterCommand {
     },
     ClearHistory {
         reply_tx: ReplySender<ClearHistoryReply>,
+    },
+    #[cfg(test)]
+    Flush {
+        reply_tx: ReplySender<FlushReply>,
     },
 }
 
@@ -163,5 +169,16 @@ impl RecorderBackend {
         reply_rx
             .recv()
             .map_err(|err| format!("query_recorder clear reply failed: {err}"))?
+    }
+
+    #[cfg(test)]
+    pub(super) fn flush_for_test(&self) -> FlushReply {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.queue_tx
+            .send(WriterCommand::Flush { reply_tx })
+            .map_err(|err| format!("query_recorder flush enqueue failed: {err}"))?;
+        reply_rx
+            .recv()
+            .map_err(|err| format!("query_recorder flush reply failed: {err}"))?
     }
 }

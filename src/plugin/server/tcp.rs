@@ -21,6 +21,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::Deserialize;
 use socket2::{Socket, TcpKeepalive};
+use tokio::io::AsyncWrite;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
 #[cfg(feature = "server-dot")]
@@ -36,7 +37,7 @@ use crate::core::system_utils::deserialize_duration_option;
 use crate::network::listen;
 #[cfg(feature = "server-dot")]
 use crate::network::tls_config::load_tls_config;
-use crate::network::transport::tcp_transport::TcpTransport;
+use crate::network::transport::tcp_transport::{TcpTransport, TcpTransportWriter};
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::server::{
     ConnectionGuard, DEFAULT_SERVER_IDLE_TIMEOUT, RequestHandle, RequestMeta, Server,
@@ -326,19 +327,11 @@ async fn handle_dns_stream<S>(
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Sync + Unpin + 'static,
 {
     let transport = TcpTransport::new(stream);
-    let (mut reader, mut writer) = transport.into_split();
+    let (mut reader, writer) = transport.into_split();
 
-    let (sender, mut receiver) = tokio::sync::mpsc::channel::<Message>(128);
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Message>(128);
 
-    let handle = tokio::spawn(async move {
-        loop {
-            if let Some(response) = receiver.recv().await
-                && let Err(e) = writer.write_message(&response).await
-            {
-                warn!("Failed to write TCP response to {}: {}", src, e);
-            }
-        }
-    });
+    let handle = tokio::spawn(write_tcp_responses(writer, receiver, src));
 
     let sender = Arc::new(sender);
 
@@ -369,6 +362,20 @@ async fn handle_dns_stream<S>(
         };
     }
     handle.abort();
+}
+
+async fn write_tcp_responses<S>(
+    mut writer: TcpTransportWriter<S>,
+    mut receiver: tokio::sync::mpsc::Receiver<Message>,
+    src: SocketAddr,
+) where
+    S: AsyncWrite + Unpin,
+{
+    while let Some(response) = receiver.recv().await {
+        if let Err(e) = writer.write_message(&response).await {
+            warn!("Failed to write TCP response to {}: {}", src, e);
+        }
+    }
 }
 
 /// Build a TCP socket with reuse_address and reuse_port options when available
@@ -524,5 +531,20 @@ listen: 127.0.0.1:53
             deps,
             vec![DependencySpec::executor("args.entry", "forward_main")]
         );
+    }
+
+    #[tokio::test]
+    async fn test_tcp_writer_exits_when_response_channel_closes() {
+        let (_client, server) = tokio::io::duplex(64);
+        let writer = TcpTransportWriter::new(server);
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        drop(sender);
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            write_tcp_responses(writer, receiver, "127.0.0.1:12345".parse().unwrap()),
+        )
+        .await
+        .expect("writer should exit when all response senders are dropped");
     }
 }

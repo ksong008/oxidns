@@ -22,6 +22,8 @@ use crate::network::upstream::pool::{
 use crate::network::upstream::utils::close_conns;
 use crate::proto::Message;
 
+const POOL_RETRY_BACKOFF: Duration = Duration::from_millis(10);
+
 #[derive(Debug)]
 pub struct PipelinePool<C: Connection> {
     /// Round-robin index for load balancing across connections
@@ -148,8 +150,14 @@ impl<C: Connection> PipelinePool<C> {
             let conns = self.connections.load();
 
             if conns.is_empty() {
+                let before_len = conns.len();
+                drop(conns);
                 self.expand().await?;
-                yield_now().await;
+                if self.connections.load().len() <= before_len {
+                    tokio::time::sleep(POOL_RETRY_BACKOFF).await;
+                } else {
+                    yield_now().await;
+                }
                 continue;
             }
 
@@ -167,11 +175,16 @@ impl<C: Connection> PipelinePool<C> {
 
             // Check if we can expand
             if self.connections.load().len() < self.max_size {
-                if self.expand().await.is_err() {
-                    yield_now().await;
+                let before_len = self.connections.load().len();
+                match self.expand().await {
+                    Ok(()) if self.connections.load().len() > before_len => {
+                        yield_now().await;
+                    }
+                    _ => {
+                        tokio::time::sleep(POOL_RETRY_BACKOFF).await;
+                    }
                 }
             } else {
-                // All connections are at max_load, yield to allow active queries to finish
                 yield_now().await;
             }
         }

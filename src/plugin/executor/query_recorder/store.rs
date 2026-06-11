@@ -210,6 +210,19 @@ pub(super) fn run_writer_thread(
                 .map_err(|err| err.to_string());
                 let _ = reply_tx.send(result);
             }
+            #[cfg(test)]
+            Ok(WriterCommand::Flush { reply_tx }) => {
+                let result = flush_pending(
+                    &mut conn,
+                    &tables,
+                    &mut pending,
+                    &tail,
+                    memory_tail,
+                    &broadcaster,
+                )
+                .map_err(|err| err.to_string());
+                let _ = reply_tx.send(result);
+            }
             Err(RecvTimeoutError::Timeout) => {
                 flush_pending(
                     &mut conn,

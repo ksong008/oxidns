@@ -20,6 +20,8 @@ use crate::network::upstream::pool::{
 use crate::network::upstream::utils::close_conns;
 use crate::proto::Message;
 
+const POOL_RETRY_BACKOFF: Duration = Duration::from_millis(10);
+
 /// A reusable connection pool implementation
 /// - Keeps a minimum number of active connections (`min_size`)
 /// - Can expand up to `max_size` when needed
@@ -190,7 +192,13 @@ impl<C: Connection> ReusePool<C> {
             }
 
             if self.active_count.load(Ordering::Relaxed) < self.max_size {
+                let before_active = self.active_count.load(Ordering::Relaxed);
                 let _ = self.expand().await;
+                if self.connections.is_empty()
+                    && self.active_count.load(Ordering::Relaxed) <= before_active
+                {
+                    tokio::time::sleep(POOL_RETRY_BACKOFF).await;
+                }
             } else {
                 debug!("Pool is full, waiting for release...");
                 while self.connections.is_empty() {

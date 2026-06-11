@@ -67,6 +67,8 @@ export default function SettingsPage() {
   const checkForUpdates = useUpdateStore((s) => s.checkForUpdates);
   const triggerUpgrade = useUpdateStore((s) => s.triggerUpgrade);
   const [copiedCmd, setCopiedCmd] = useState(false);
+  const [tokenPersistenceHelpOpen, setTokenPersistenceHelpOpen] =
+    useState(false);
 
   const configModel = useAppStore((s) => s.configModel);
   const configPath = useAppStore((s) => s.configPath);
@@ -187,6 +189,9 @@ export default function SettingsPage() {
     }
     if (upgradeConfig.socks5.trim()) {
       parts.push("--socks5", upgradeConfig.socks5.trim());
+    }
+    if (upgradeConfig.githubToken.trim()) {
+      parts.push("--github-token", "<GITHUB_TOKEN>");
     }
     if (upgradeConfig.allowPrerelease) {
       parts.push("--allow-prerelease");
@@ -1239,11 +1244,76 @@ export default function SettingsPage() {
                           onChange={(e) =>
                             setUpgradeConfig({ socks5: e.target.value })
                           }
-                          placeholder="socks5://127.0.0.1:1080"
+                          placeholder={t(WEBUI.settings.socks5ProxyPlaceholder)}
+                          className="font-mono"
+                        />
+                      </Field>
+                      <Field>
+                        <FieldLabel>{t(WEBUI.settings.githubToken)}</FieldLabel>
+                        <p className="text-xs text-muted-foreground mb-2">
+                          {t(WEBUI.settings.githubTokenDesc)}
+                        </p>
+                        <Input
+                          value={upgradeConfig.githubToken}
+                          onChange={(e) =>
+                            setUpgradeConfig({ githubToken: e.target.value })
+                          }
+                          type="password"
+                          placeholder={t(WEBUI.settings.githubTokenPlaceholder)}
+                          autoComplete="off"
+                          autoCapitalize="none"
+                          spellCheck={false}
                           className="font-mono"
                         />
                       </Field>
                     </div>
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2">
+                      <div>
+                        <p className="text-sm font-medium">
+                          {t(WEBUI.settings.persistGithubToken)}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {t(WEBUI.settings.persistGithubTokenDesc)}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          aria-expanded={tokenPersistenceHelpOpen}
+                          onClick={() =>
+                            setTokenPersistenceHelpOpen((open) => !open)
+                          }
+                        >
+                          <CircleAlert data-icon="inline-start" />
+                          {t(WEBUI.settings.tokenSaveRisk)}
+                        </Button>
+                        <Switch
+                          aria-label={t(WEBUI.settings.persistGithubToken)}
+                          checked={upgradeConfig.persistGithubToken}
+                          onCheckedChange={(v) =>
+                            setUpgradeConfig({ persistGithubToken: v })
+                          }
+                        />
+                      </div>
+                    </div>
+                    {tokenPersistenceHelpOpen && (
+                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+                        <p className="font-medium">
+                          {t(WEBUI.settings.tokenPersistenceAdviceTitle)}
+                        </p>
+                        <p className="mt-1">
+                          {t(WEBUI.settings.tokenPersistenceSafe)}
+                        </p>
+                        <p className="mt-1">
+                          {t(WEBUI.settings.tokenPersistenceUnsafe)}
+                        </p>
+                        <p className="mt-1">
+                          {t(WEBUI.settings.tokenPersistenceScope)}
+                        </p>
+                      </div>
+                    )}
                     <div className="flex flex-wrap gap-6">
                       <div className="flex items-center justify-between gap-4">
                         <div>
