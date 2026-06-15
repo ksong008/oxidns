@@ -318,14 +318,22 @@ impl<C: Connection> PipelinePool<C> {
     fn insert_slot(&self, slot: Arc<PipelineSlot<C>>) -> bool {
         let inserted = AtomicBool::new(false);
         self.slots.rcu(|old_slots| {
-            let current_len = old_slots.len();
+            let mut new_slots = Vec::with_capacity(old_slots.len() + 1);
+            new_slots.extend(
+                old_slots
+                    .iter()
+                    .filter(|slot| !slot.is_drained_unusable())
+                    .cloned(),
+            );
+            let current_len = new_slots.len();
             if current_len >= self.max_size {
                 inserted.store(false, Ordering::Relaxed);
-                return old_slots.clone();
+                if current_len == old_slots.len() {
+                    return old_slots.clone();
+                }
+                return Arc::new(new_slots);
             }
 
-            let mut new_slots = Vec::with_capacity(current_len + 1);
-            new_slots.extend_from_slice(old_slots);
             new_slots.push(slot.clone());
             inserted.store(true, Ordering::Relaxed);
             Arc::new(new_slots)
@@ -336,7 +344,7 @@ impl<C: Connection> PipelinePool<C> {
     fn try_reserve_slot(&self) -> Option<SlotReservation<'_, C>> {
         loop {
             let reserved = self.reserved_slots.load(Ordering::Acquire);
-            let active = self.slots.load().len();
+            let active = self.usable_or_inflight_slot_count();
             if active.saturating_add(reserved) >= self.max_size {
                 return None;
             }
@@ -349,6 +357,39 @@ impl<C: Connection> PipelinePool<C> {
                 Ok(_) => return Some(SlotReservation::new(self)),
                 Err(_) => continue,
             }
+        }
+    }
+
+    fn usable_or_inflight_slot_count(&self) -> usize {
+        let slots = self.slots.load();
+        let active = slots
+            .iter()
+            .filter(|slot| !slot.is_drained_unusable())
+            .count();
+        if active == slots.len() {
+            return active;
+        }
+
+        let mut pruned = Vec::with_capacity(active);
+        pruned.extend(
+            slots
+                .iter()
+                .filter(|slot| !slot.is_drained_unusable())
+                .cloned(),
+        );
+        let pruned_len = pruned.len();
+        if Arc::ptr_eq(
+            &slots,
+            &self.slots.compare_and_swap(&slots, Arc::new(pruned)),
+        ) {
+            self.release_notified.notify_waiters();
+            pruned_len
+        } else {
+            self.slots
+                .load()
+                .iter()
+                .filter(|slot| !slot.is_drained_unusable())
+                .count()
         }
     }
 
@@ -481,6 +522,10 @@ impl<C: Connection> PipelineSlot<C> {
             }
             Err(_) => false,
         }
+    }
+
+    fn is_drained_unusable(&self) -> bool {
+        self.state() != SLOT_ACTIVE && self.inflight() == 0
     }
 }
 
@@ -838,6 +883,31 @@ mod tests {
 
         assert!(pool.slots.load().is_empty());
         assert_eq!(conn.close_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_acquire_replaces_drained_unusable_slot_at_capacity() {
+        AppClock::start();
+        let stale = Arc::new(MockConnection::new(true, 0, AppClock::elapsed_millis()));
+        let replacement = Arc::new(MockConnection::new(true, 0, AppClock::elapsed_millis()));
+        let pool = make_pool(
+            0,
+            1,
+            4,
+            10,
+            MockBuilder::new(vec![Ok(replacement.clone())]),
+            vec![stale.clone()],
+        );
+        pool.slots.load()[0].close();
+
+        let lease = pool
+            .acquire(QueryDeadline::new(Duration::from_millis(100)))
+            .await
+            .expect("closed slot should be pruned before reserving a replacement");
+
+        assert!(Arc::ptr_eq(&lease.slot.conn, &replacement));
+        assert_eq!(pool.slots.load().len(), 1);
+        assert_eq!(stale.close_calls(), 1);
     }
 
     #[tokio::test]
