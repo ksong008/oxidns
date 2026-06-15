@@ -142,6 +142,7 @@ pub struct H3ConnectionBuilder {
     server_name: String,
     request_uri: String,
     insecure_skip_verify: bool,
+    timeout: std::time::Duration,
     so_mark: Option<u32>,
     bind_to_device: Option<String>,
 }
@@ -154,6 +155,7 @@ impl H3ConnectionBuilder {
             server_name: connection_info.server_name.clone(),
             request_uri: build_doh_request_uri(connection_info),
             insecure_skip_verify: connection_info.insecure_skip_verify,
+            timeout: connection_info.timeout,
             so_mark: connection_info.so_mark,
             bind_to_device: connection_info.bind_to_device.clone(),
         }
@@ -182,6 +184,7 @@ impl ConnectionBuilder<H3Connection> for H3ConnectionBuilder {
             deadline
                 .remaining()
                 .ok_or_else(|| deadline.timeout_error())?,
+            self.timeout,
             vec![b"h3".to_vec()],
         )
         .await?;
@@ -262,6 +265,7 @@ mod tests {
     fn test_builder_new_uses_http3_request_uri_and_flags() {
         let mut connection_info = ConnectionInfo::with_addr("h3://dns.example.com/dns-query")
             .expect("connection info should parse");
+        connection_info.timeout = std::time::Duration::from_secs(4);
         connection_info.insecure_skip_verify = true;
         connection_info.so_mark = Some(7);
         connection_info.bind_to_device = Some("utun1".to_string());
@@ -275,6 +279,7 @@ mod tests {
             "https://dns.example.com/dns-query?dns="
         );
         assert!(builder.insecure_skip_verify);
+        assert_eq!(builder.timeout, std::time::Duration::from_secs(4));
         assert_eq!(builder.so_mark, Some(7));
         assert_eq!(builder.bind_to_device.as_deref(), Some("utun1"));
     }

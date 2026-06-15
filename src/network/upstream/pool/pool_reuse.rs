@@ -253,6 +253,19 @@ impl<C: Connection> ReusePool<C> {
                     self.close_active_connection(conn);
                     continue;
                 }
+                if let Some(reservation) = self.try_reserve_active() {
+                    match self.create_reserved_connection(reservation, deadline).await {
+                        Ok(conn) => return Ok(BorrowedConnection::new(self, conn)),
+                        Err(e) => {
+                            if deadline.remaining().is_none() {
+                                return Err(deadline.timeout_error());
+                            }
+                            debug!("Failed to create reuse-pool connection: {:?}", e);
+                            self.wait_backoff(deadline).await?;
+                            continue;
+                        }
+                    }
+                }
                 match deadline.run(notified.as_mut()).await {
                     DeadlineOutcome::Completed(()) => {}
                     DeadlineOutcome::Expired => return Err(deadline.timeout_error()),

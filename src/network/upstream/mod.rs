@@ -59,7 +59,7 @@ use crate::network::upstream::pool::conn_udp::{UdpConnection, UdpConnectionBuild
 use crate::network::upstream::pool::pool_pipeline::PipelinePool;
 use crate::network::upstream::pool::pool_reuse::ReusePool;
 use crate::network::upstream::pool::{
-    Connection, ConnectionBuilder, ConnectionPool, QueryTimeoutPolicy,
+    Connection, ConnectionBuilder, ConnectionPool, DeadlineOutcome, QueryTimeoutPolicy,
 };
 use crate::network::upstream::utils::try_lookup_server_name;
 use crate::proto::Message;
@@ -324,7 +324,16 @@ pub trait Upstream: Send + Sync + Debug {
             );
             return Err(deadline.timeout_error());
         }
-        self.inner_query(message, deadline).await
+        match deadline.run(self.inner_query(message, deadline)).await {
+            DeadlineOutcome::Completed(result) => result,
+            DeadlineOutcome::Expired => {
+                warn!(
+                    timeout_secs = self.timeout().as_secs_f64(),
+                    "Upstream DNS query timeout"
+                );
+                Err(deadline.timeout_error())
+            }
+        }
     }
 
     /// Send a DNS query with unified deadline handling
@@ -1498,6 +1507,23 @@ pub(crate) async fn connect_tcp_stream(
 mod tests {
     use super::*;
 
+    #[derive(Debug)]
+    struct SlowUpstream {
+        connection_info: ConnectionInfo,
+    }
+
+    #[async_trait]
+    impl Upstream for SlowUpstream {
+        async fn inner_query(&self, request: Message, _deadline: QueryDeadline) -> Result<Message> {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok(request)
+        }
+
+        fn connection_info(&self) -> &ConnectionInfo {
+            &self.connection_info
+        }
+    }
+
     fn make_upstream_config(addr: &str) -> UpstreamConfig {
         UpstreamConfig {
             tag: None,
@@ -1584,6 +1610,19 @@ mod tests {
         cfg.max_conns = Some(999);
         let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
         assert_eq!(info.max_conns, Some(999));
+    }
+
+    #[tokio::test]
+    async fn test_query_wraps_custom_upstream_in_deadline() {
+        crate::core::app_clock::AppClock::start();
+        let mut connection_info =
+            ConnectionInfo::with_addr("udp://127.0.0.1").expect("upstream should parse");
+        connection_info.timeout = Duration::from_millis(10);
+        let upstream = SlowUpstream { connection_info };
+
+        let result = upstream.query(Message::new()).await;
+
+        assert!(result.is_err());
     }
 
     #[test]

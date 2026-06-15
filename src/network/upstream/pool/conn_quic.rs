@@ -163,6 +163,7 @@ pub struct QuicConnectionBuilder {
     port: u16,
     server_name: String,
     insecure_skip_verify: bool,
+    timeout: std::time::Duration,
     so_mark: Option<u32>,
     bind_to_device: Option<String>,
 }
@@ -174,6 +175,7 @@ impl QuicConnectionBuilder {
             port: connection_info.port,
             server_name: connection_info.server_name.clone(),
             insecure_skip_verify: connection_info.insecure_skip_verify,
+            timeout: connection_info.timeout,
             so_mark: connection_info.so_mark,
             bind_to_device: connection_info.bind_to_device.clone(),
         }
@@ -217,6 +219,7 @@ impl ConnectionBuilder<QuicConnection> for QuicConnectionBuilder {
             deadline
                 .remaining()
                 .ok_or_else(|| deadline.timeout_error())?,
+            self.timeout,
             vec![b"doq".to_vec()],
         )
         .await?;
@@ -286,6 +289,7 @@ mod tests {
         assert_eq!(builder.port, 853);
         assert_eq!(builder.server_name, "dns.example.com");
         assert!(builder.insecure_skip_verify);
+        assert_eq!(builder.timeout, std::time::Duration::from_secs(3));
         assert_eq!(builder.so_mark, Some(9));
         assert_eq!(builder.bind_to_device.as_deref(), Some("wg0"));
     }

@@ -135,7 +135,8 @@ pub(crate) async fn connect_quic(
     udp_socket: UdpSocket,
     skip_cert: bool,
     server_name: String,
-    conn_timeout: Duration,
+    handshake_timeout: Duration,
+    idle_timeout: Duration,
     alpn: Vec<Vec<u8>>,
 ) -> Result<quinn::Connection> {
     let remote_addr = udp_socket.peer_addr()?;
@@ -153,12 +154,12 @@ pub(crate) async fn connect_quic(
     };
     client_config.alpn_protocols = alpn;
 
-    // Set QUIC idle timeout to 3× the query timeout. Without this, zombie
+    // Set QUIC idle timeout to 3× the configured query timeout. Without this, zombie
     // connections (server stops responding but never sends CONNECTION_CLOSE)
     // are never detected by the QUIC layer, and send_request() / open_bi()
     // block forever. With idle timeout, the QUIC stack closes the connection
     // and the H3/DoQ driver task calls conn.close(), letting the pool replace it.
-    let idle_ms = (conn_timeout.as_millis() * 3).min(u32::MAX as u128) as u32;
+    let idle_ms = (idle_timeout.as_millis() * 3).min(u32::MAX as u128) as u32;
     let mut transport = TransportConfig::default();
     transport.max_idle_timeout(Some(VarInt::from_u32(idle_ms).into()));
 
@@ -167,7 +168,12 @@ pub(crate) async fn connect_quic(
 
     endpoint.set_default_client_config(client_config);
 
-    match timeout(conn_timeout, endpoint.connect(remote_addr, &server_name)?).await {
+    match timeout(
+        handshake_timeout,
+        endpoint.connect(remote_addr, &server_name)?,
+    )
+    .await
+    {
         Ok(Ok(s)) => Ok(s),
         Ok(Err(e)) => Err(DnsError::protocol(format!("QUIC connection error: {}", e))),
         Err(_) => Err(DnsError::protocol("QUIC handshake timeout")),
