@@ -154,11 +154,12 @@ pub(crate) async fn connect_quic(
     };
     client_config.alpn_protocols = alpn;
 
-    // Set QUIC idle timeout to 3× the configured query timeout. Without this, zombie
-    // connections (server stops responding but never sends CONNECTION_CLOSE)
-    // are never detected by the QUIC layer, and send_request() / open_bi()
-    // block forever. With idle timeout, the QUIC stack closes the connection
-    // and the H3/DoQ driver task calls conn.close(), letting the pool replace it.
+    // Set QUIC idle timeout to 3× the configured query timeout. Without this,
+    // zombie connections (server stops responding but never sends
+    // CONNECTION_CLOSE) are never detected by the QUIC layer, and
+    // send_request() / open_bi() block forever. With idle timeout, the QUIC
+    // stack closes the connection and the H3/DoQ driver task calls
+    // conn.close(), letting the pool replace it.
     let idle_ms = (idle_timeout.as_millis() * 3).min(u32::MAX as u128) as u32;
     let mut transport = TransportConfig::default();
     transport.max_idle_timeout(Some(VarInt::from_u32(idle_ms).into()));

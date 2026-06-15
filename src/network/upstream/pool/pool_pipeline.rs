@@ -234,6 +234,28 @@ impl<C: Connection> PipelinePool<C> {
                 if let Some(slot) = self.try_acquire_existing() {
                     return Ok(PipelineLease::new(slot, &self.release_notified));
                 }
+                if let Some(reservation) = self.try_reserve_slot() {
+                    match self.expand_one(reservation, deadline).await {
+                        Ok(Some(slot)) => {
+                            if slot.try_acquire(self.max_load) {
+                                return Ok(PipelineLease::new(slot, &self.release_notified));
+                            }
+                            self.release_notified.notify_waiters();
+                        }
+                        Ok(None) => {
+                            self.wait_backoff(deadline).await?;
+                            continue;
+                        }
+                        Err(e) => {
+                            if deadline.remaining().is_none() {
+                                return Err(deadline.timeout_error());
+                            }
+                            debug!("Failed to create pipeline-pool connection: {:?}", e);
+                            self.wait_backoff(deadline).await?;
+                            continue;
+                        }
+                    }
+                }
                 match deadline.run(notified.as_mut()).await {
                     DeadlineOutcome::Completed(()) => {}
                     DeadlineOutcome::Expired => return Err(deadline.timeout_error()),
@@ -841,6 +863,48 @@ mod tests {
             .expect("acquire should succeed");
 
         assert!(matched);
+    }
+
+    #[tokio::test]
+    async fn test_acquire_replaces_drained_slot_after_capacity_is_freed() {
+        AppClock::start();
+        let stale = Arc::new(MockConnection::new(true, 0, AppClock::elapsed_millis()));
+        let replacement = Arc::new(MockConnection::new(true, 0, AppClock::elapsed_millis()));
+        let pool = Arc::new(make_pool(
+            0,
+            1,
+            1,
+            10,
+            MockBuilder::new(vec![Ok(replacement.clone())]),
+            vec![stale.clone()],
+        ));
+        let lease = pool
+            .acquire(QueryDeadline::new(Duration::from_secs(1)))
+            .await
+            .expect("first acquire should saturate the only slot");
+
+        let waiting_pool = pool.clone();
+        let expected_replacement = replacement.clone();
+        let waiter = tokio::spawn(async move {
+            let next = waiting_pool
+                .acquire(QueryDeadline::new(Duration::from_secs(1)))
+                .await?;
+            Ok::<_, DnsError>(Arc::ptr_eq(&next.slot.conn, &expected_replacement))
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        lease.close();
+        drop(lease);
+
+        let matched = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("waiter should not remain parked after capacity is freed")
+            .expect("join should succeed")
+            .expect("acquire should create a replacement slot");
+
+        assert!(matched);
+        assert_eq!(stale.close_calls(), 1);
+        assert_eq!(pool.slots.load().len(), 1);
     }
 
     #[tokio::test]

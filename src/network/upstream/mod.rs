@@ -311,6 +311,15 @@ pub trait Upstream: Send + Sync + Debug {
         self.connection_info().connection_type
     }
 
+    /// Whether `inner_query` owns deadline enforcement and timeout cleanup.
+    ///
+    /// Pool-backed implementations must return `true` so the pool can observe
+    /// deadline expiry and apply its connection retirement/close policy.
+    #[inline]
+    fn handles_query_deadline(&self) -> bool {
+        false
+    }
+
     /// Send a DNS query with an existing upstream deadline.
     async fn query_with_deadline(
         &self,
@@ -323,6 +332,9 @@ pub trait Upstream: Send + Sync + Debug {
                 "Upstream DNS query timeout"
             );
             return Err(deadline.timeout_error());
+        }
+        if self.handles_query_deadline() {
+            return self.inner_query(message, deadline).await;
         }
         match deadline.run(self.inner_query(message, deadline)).await {
             DeadlineOutcome::Completed(result) => result,
@@ -993,7 +1005,10 @@ impl<C: Connection> Upstream for PooledUpstream<C> {
     fn connection_info(&self) -> &ConnectionInfo {
         &self.connection_info
     }
-    // Note: timeout() uses default implementation from trait
+
+    fn handles_query_deadline(&self) -> bool {
+        true
+    }
 }
 
 /// UDP upstream with automatic TCP fallback on truncation
@@ -1037,7 +1052,10 @@ impl Upstream for UdpTruncatedUpstream {
     fn connection_info(&self) -> &ConnectionInfo {
         &self.connection_info
     }
-    // Note: timeout() and connection_type() use default implementations from trait
+
+    fn handles_query_deadline(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug)]
@@ -1371,7 +1389,10 @@ impl<C: Connection> Upstream for BootstrapUpstream<C> {
     fn connection_info(&self) -> &ConnectionInfo {
         &self.connection_info
     }
-    // Note: timeout() and connection_type() use default implementations from trait
+
+    fn handles_query_deadline(&self) -> bool {
+        true
+    }
 }
 
 /// Dummy connection builder for initial empty pool
@@ -1505,6 +1526,8 @@ pub(crate) async fn connect_tcp_stream(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+
     use super::*;
 
     #[derive(Debug)]
@@ -1522,6 +1545,56 @@ mod tests {
         fn connection_info(&self) -> &ConnectionInfo {
             &self.connection_info
         }
+    }
+
+    #[derive(Debug)]
+    struct NoopConnection {
+        available: AtomicBool,
+        using_count: AtomicU16,
+        last_used: AtomicU64,
+    }
+
+    #[async_trait]
+    impl Connection for NoopConnection {
+        fn close(&self) {
+            self.available.store(false, Ordering::Relaxed);
+        }
+
+        async fn query(&self, request: Message, _deadline: QueryDeadline) -> Result<Message> {
+            Ok(request)
+        }
+
+        fn using_count(&self) -> u16 {
+            self.using_count.load(Ordering::Relaxed)
+        }
+
+        fn available(&self) -> bool {
+            self.available.load(Ordering::Relaxed)
+        }
+
+        fn last_used(&self) -> u64 {
+            self.last_used.load(Ordering::Relaxed)
+        }
+    }
+
+    #[derive(Debug)]
+    struct DeadlineHandlingPool {
+        handled_timeout: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl ConnectionPool<NoopConnection> for DeadlineHandlingPool {
+        async fn query(&self, _request: Message, deadline: QueryDeadline) -> Result<Message> {
+            let Some(remaining) = deadline.remaining() else {
+                self.handled_timeout.store(true, Ordering::Relaxed);
+                return Err(deadline.timeout_error());
+            };
+            tokio::time::sleep(remaining + Duration::from_millis(20)).await;
+            self.handled_timeout.store(true, Ordering::Relaxed);
+            Err(deadline.timeout_error())
+        }
+
+        async fn maintain(&self) {}
     }
 
     fn make_upstream_config(addr: &str) -> UpstreamConfig {
@@ -1623,6 +1696,26 @@ mod tests {
         let result = upstream.query(Message::new()).await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_pooled_upstream_lets_pool_handle_deadline_expiry() {
+        crate::core::app_clock::AppClock::start();
+        let handled_timeout = Arc::new(AtomicBool::new(false));
+        let mut connection_info =
+            ConnectionInfo::with_addr("tcp://127.0.0.1").expect("upstream should parse");
+        connection_info.timeout = Duration::from_millis(10);
+        let upstream = PooledUpstream::<NoopConnection> {
+            connection_info,
+            pool: Arc::new(DeadlineHandlingPool {
+                handled_timeout: handled_timeout.clone(),
+            }),
+        };
+
+        let result = upstream.query(Message::new()).await;
+
+        assert!(result.is_err());
+        assert!(handled_timeout.load(Ordering::Relaxed));
     }
 
     #[test]
