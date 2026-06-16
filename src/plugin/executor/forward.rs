@@ -18,14 +18,14 @@ use tokio::task::JoinSet;
 use tracing::{Level, debug, event_enabled, info, warn};
 
 use crate::config::types::PluginConfig;
-use crate::core::app_clock::AppClock;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result};
-use crate::core::metrics::{
+use crate::infra::clock::AppClock;
+use crate::infra::error::{DnsError, Result};
+use crate::infra::network::upstream::{ConnectionInfo, Upstream, UpstreamBuilder, UpstreamConfig};
+use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
     unregister_metric_source,
 };
-use crate::network::upstream::{ConnectionInfo, Upstream, UpstreamBuilder, UpstreamConfig};
 use crate::plugin::executor::{ExecStep, Executor};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;
@@ -598,6 +598,7 @@ fn make_default_upstream_config(addr: String) -> UpstreamConfig {
         socks5: None,
         idle_timeout: None,
         max_conns: None,
+        min_conns: None,
         insecure_skip_verify: None,
         timeout: None,
         enable_pipeline: None,
@@ -739,6 +740,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::infra::network::upstream::QueryDeadline;
     use crate::proto::{Name, Question, Rcode, RecordType};
 
     #[derive(Debug)]
@@ -777,7 +779,7 @@ mod tests {
 
     #[async_trait]
     impl Upstream for MockUpstream {
-        async fn inner_query(&self, request: Message) -> Result<Message> {
+        async fn inner_query(&self, request: Message, _deadline: QueryDeadline) -> Result<Message> {
             if !self.delay.is_zero() {
                 tokio::time::sleep(self.delay).await;
             }
