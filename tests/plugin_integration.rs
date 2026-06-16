@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::fs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket as StdUdpSocket};
 use std::path::PathBuf;
 #[cfg(target_os = "linux")]
@@ -1990,6 +1991,39 @@ plugins:
     Ok(())
 }
 
+#[tokio::test]
+async fn test_qname_matcher_loads_regex_rule_with_comma_from_file() -> Result<()> {
+    let domain_rules = test_rule_path("domain_set_1.txt");
+    let yaml = format!(
+        r#"
+log:
+  level: info
+plugins:
+  - tag: domain_match
+    type: qname
+    args:
+      - "&{domain_rules}"
+"#
+    );
+
+    let config = parse_config(&yaml)?;
+    let registry = plugin::init(config).await?;
+
+    let matcher = registry
+        .get_plugin("domain_match")
+        .expect("domain matcher should exist")
+        .to_matcher();
+
+    let mut matching_ctx = make_context(registry.clone(), "api12.service.test.");
+    assert!(matcher.is_match(&mut matching_ctx));
+
+    let mut non_matching_ctx = make_context(registry.clone(), "api123.service.test.");
+    assert!(!matcher.is_match(&mut non_matching_ctx));
+
+    registry.destroy().await;
+    Ok(())
+}
+
 #[cfg(feature = "plugin-dynamic-domain")]
 #[tokio::test]
 async fn test_dynamic_domain_set_learns_through_sequence_and_parent_domain_set() -> Result<()> {
@@ -2204,6 +2238,53 @@ plugins:
         ctx.set_peer_addr(SocketAddr::new(ip, 5300));
         assert!(!matcher.is_match(&mut ctx), "{ip} should not match");
     }
+
+    registry.destroy().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_client_ip_matcher_loads_rules_from_file() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let ip_rules = temp_dir.path().join("client_ip_rules.txt");
+    fs::write(&ip_rules, "203.0.113.7\n198.51.100.0/24\n2001:db8::7\n")?;
+    let yaml = format!(
+        r#"
+log:
+  level: info
+plugins:
+  - tag: match_client
+    type: client_ip
+    args:
+      - "&{}"
+"#,
+        yaml_path(&ip_rules)
+    );
+
+    let config = parse_config(&yaml)?;
+    let registry = plugin::init(config).await?;
+
+    let matcher = registry
+        .get_plugin("match_client")
+        .expect("client matcher should exist")
+        .to_matcher();
+
+    for ip in [
+        IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)),
+        IpAddr::V4(Ipv4Addr::new(198, 51, 100, 42)),
+        IpAddr::V6(Ipv6Addr::from([0x2001, 0xDB8, 0, 0, 0, 0, 0, 7])),
+    ] {
+        let mut ctx = make_context(registry.clone(), "example.com.");
+        ctx.set_peer_addr(SocketAddr::new(ip, 5300));
+        assert!(matcher.is_match(&mut ctx), "{ip} should match");
+    }
+
+    let mut missing_ctx = make_context(registry.clone(), "example.com.");
+    missing_ctx.set_peer_addr(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::new(203, 0, 113, 8)),
+        5300,
+    ));
+    assert!(!matcher.is_match(&mut missing_ctx));
 
     registry.destroy().await;
     Ok(())
