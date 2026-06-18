@@ -22,6 +22,9 @@ use super::store::{
     load_latency_summary, load_plugin_stats, load_qtype_distribution, load_rcode_distribution,
     load_record_detail, load_timeseries, load_top_clients, load_top_qnames, query_records,
 };
+use crate::api::query::{
+    optional_text, optional_upper_text, parse_u64_param, parse_usize_param, visit_query_params,
+};
 use crate::api::{ApiHandler, json_error, json_ok, simple_response, streaming_response};
 use crate::infra::error::{DnsError, Result};
 use crate::register_plugin_api;
@@ -472,25 +475,26 @@ pub(super) fn parse_list_query(query: Option<&str>) -> std::result::Result<ListQ
     let mut until_ms = None;
     let mut filter = QueryRecordFilter::default();
 
-    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
-        match key.as_ref() {
-            "cursor" => cursor = Some(parse_cursor(value.as_ref())?),
-            "limit" => limit = parse_limit(value.as_ref())?,
-            "since_ms" => since_ms = Some(parse_u64_query("since_ms", value.as_ref())?),
-            "until_ms" => until_ms = Some(parse_u64_query("until_ms", value.as_ref())?),
-            "qname" => filter.qname = optional_text(value.as_ref()),
-            "qtype" => filter.qtype = optional_upper_text(value.as_ref()),
-            "client_ip" => filter.client_ip = optional_text(value.as_ref()),
-            "rcode" => filter.rcode = optional_upper_text(value.as_ref()),
+    visit_query_params(query, |key, value| {
+        match key {
+            "cursor" => cursor = Some(parse_cursor(value)?),
+            "limit" => limit = parse_limit(value)?,
+            "since_ms" => since_ms = Some(parse_u64_query("since_ms", value)?),
+            "until_ms" => until_ms = Some(parse_u64_query("until_ms", value)?),
+            "qname" => filter.qname = optional_text(value),
+            "qtype" => filter.qtype = optional_upper_text(value),
+            "client_ip" => filter.client_ip = optional_text(value),
+            "rcode" => filter.rcode = optional_upper_text(value),
             "status" => {
-                if let Some(value) = optional_text(value.as_ref()) {
+                if let Some(value) = optional_text(value) {
                     filter.status = QueryRecordStatus::parse(value.as_str())?;
                 }
             }
-            "matcher_tag" => filter.matcher_tag = optional_text(value.as_ref()),
+            "matcher_tag" => filter.matcher_tag = optional_text(value),
             _ => {}
         }
-    }
+        Ok(())
+    })?;
 
     Ok(ListQuery {
         cursor,
@@ -508,24 +512,25 @@ pub(super) fn parse_plugins_stats_query(
     let mut until_ms = None;
     let mut kind = PluginStatsKind::All;
     let mut filter = QueryRecordFilter::default();
-    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
-        match key.as_ref() {
-            "since_ms" => since_ms = Some(parse_u64_query("since_ms", value.as_ref())?),
-            "until_ms" => until_ms = Some(parse_u64_query("until_ms", value.as_ref())?),
-            "kind" => kind = PluginStatsKind::parse(value.as_ref())?,
-            "qname" => filter.qname = optional_text(value.as_ref()),
-            "qtype" => filter.qtype = optional_upper_text(value.as_ref()),
-            "client_ip" => filter.client_ip = optional_text(value.as_ref()),
-            "rcode" => filter.rcode = optional_upper_text(value.as_ref()),
+    visit_query_params(query, |key, value| {
+        match key {
+            "since_ms" => since_ms = Some(parse_u64_query("since_ms", value)?),
+            "until_ms" => until_ms = Some(parse_u64_query("until_ms", value)?),
+            "kind" => kind = PluginStatsKind::parse(value)?,
+            "qname" => filter.qname = optional_text(value),
+            "qtype" => filter.qtype = optional_upper_text(value),
+            "client_ip" => filter.client_ip = optional_text(value),
+            "rcode" => filter.rcode = optional_upper_text(value),
             "status" => {
-                if let Some(value) = optional_text(value.as_ref()) {
+                if let Some(value) = optional_text(value) {
                     filter.status = QueryRecordStatus::parse(value.as_str())?;
                 }
             }
-            "matcher_tag" => filter.matcher_tag = optional_text(value.as_ref()),
+            "matcher_tag" => filter.matcher_tag = optional_text(value),
             _ => {}
         }
-    }
+        Ok(())
+    })?;
     Ok(PluginsStatsQuery {
         since_ms,
         until_ms,
@@ -539,14 +544,15 @@ pub(super) fn parse_top_query(query: Option<&str>) -> std::result::Result<TopQue
     let mut until_ms = None;
     let mut limit = DEFAULT_TOP_LIMIT;
     let mut filter = QueryRecordFilter::default();
-    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
-        match key.as_ref() {
-            "since_ms" => since_ms = Some(parse_u64_query("since_ms", value.as_ref())?),
-            "until_ms" => until_ms = Some(parse_u64_query("until_ms", value.as_ref())?),
-            "limit" => limit = parse_top_limit(value.as_ref())?,
-            other => apply_filter_param(&mut filter, other, value.as_ref())?,
+    visit_query_params(query, |key, value| {
+        match key {
+            "since_ms" => since_ms = Some(parse_u64_query("since_ms", value)?),
+            "until_ms" => until_ms = Some(parse_u64_query("until_ms", value)?),
+            "limit" => limit = parse_top_limit(value)?,
+            other => apply_filter_param(&mut filter, other, value)?,
         }
-    }
+        Ok(())
+    })?;
     Ok(TopQuery {
         since_ms,
         until_ms,
@@ -561,13 +567,14 @@ pub(super) fn parse_distribution_query(
     let mut since_ms = None;
     let mut until_ms = None;
     let mut filter = QueryRecordFilter::default();
-    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
-        match key.as_ref() {
-            "since_ms" => since_ms = Some(parse_u64_query("since_ms", value.as_ref())?),
-            "until_ms" => until_ms = Some(parse_u64_query("until_ms", value.as_ref())?),
-            other => apply_filter_param(&mut filter, other, value.as_ref())?,
+    visit_query_params(query, |key, value| {
+        match key {
+            "since_ms" => since_ms = Some(parse_u64_query("since_ms", value)?),
+            "until_ms" => until_ms = Some(parse_u64_query("until_ms", value)?),
+            other => apply_filter_param(&mut filter, other, value)?,
         }
-    }
+        Ok(())
+    })?;
     Ok(DistributionQuery {
         since_ms,
         until_ms,
@@ -582,14 +589,15 @@ pub(super) fn parse_latency_query(
     let mut until_ms = None;
     let mut slow_limit = DEFAULT_SLOW_LIMIT;
     let mut filter = QueryRecordFilter::default();
-    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
-        match key.as_ref() {
-            "since_ms" => since_ms = Some(parse_u64_query("since_ms", value.as_ref())?),
-            "until_ms" => until_ms = Some(parse_u64_query("until_ms", value.as_ref())?),
-            "slow_limit" | "limit" => slow_limit = parse_top_limit(value.as_ref())?,
-            other => apply_filter_param(&mut filter, other, value.as_ref())?,
+    visit_query_params(query, |key, value| {
+        match key {
+            "since_ms" => since_ms = Some(parse_u64_query("since_ms", value)?),
+            "until_ms" => until_ms = Some(parse_u64_query("until_ms", value)?),
+            "slow_limit" | "limit" => slow_limit = parse_top_limit(value)?,
+            other => apply_filter_param(&mut filter, other, value)?,
         }
-    }
+        Ok(())
+    })?;
     Ok(LatencyQuery {
         since_ms,
         until_ms,
@@ -606,15 +614,16 @@ pub(super) fn parse_timeseries_query(
     let mut bucket = TimeseriesBucket::Minute;
     let mut max_buckets = DEFAULT_TIMESERIES_BUCKETS;
     let mut filter = QueryRecordFilter::default();
-    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
-        match key.as_ref() {
-            "since_ms" => since_ms = Some(parse_u64_query("since_ms", value.as_ref())?),
-            "until_ms" => until_ms = Some(parse_u64_query("until_ms", value.as_ref())?),
-            "bucket" => bucket = TimeseriesBucket::parse(value.as_ref())?,
-            "buckets" => max_buckets = parse_timeseries_buckets(value.as_ref())?,
-            other => apply_filter_param(&mut filter, other, value.as_ref())?,
+    visit_query_params(query, |key, value| {
+        match key {
+            "since_ms" => since_ms = Some(parse_u64_query("since_ms", value)?),
+            "until_ms" => until_ms = Some(parse_u64_query("until_ms", value)?),
+            "bucket" => bucket = TimeseriesBucket::parse(value)?,
+            "buckets" => max_buckets = parse_timeseries_buckets(value)?,
+            other => apply_filter_param(&mut filter, other, value)?,
         }
-    }
+        Ok(())
+    })?;
     Ok(TimeseriesQuery {
         since_ms,
         until_ms,
@@ -646,9 +655,7 @@ fn apply_filter_param(
 }
 
 fn parse_top_limit(raw: &str) -> std::result::Result<usize, String> {
-    let parsed = raw
-        .parse::<usize>()
-        .map_err(|err| format!("invalid limit query parameter: {err}"))?;
+    let parsed = parse_usize_param(raw, |err| format!("invalid limit query parameter: {err}"))?;
     if parsed == 0 {
         return Err("limit must be greater than 0".to_string());
     }
@@ -662,9 +669,7 @@ fn parse_top_limit(raw: &str) -> std::result::Result<usize, String> {
 }
 
 fn parse_timeseries_buckets(raw: &str) -> std::result::Result<usize, String> {
-    let parsed = raw
-        .parse::<usize>()
-        .map_err(|err| format!("invalid buckets query parameter: {err}"))?;
+    let parsed = parse_usize_param(raw, |err| format!("invalid buckets query parameter: {err}"))?;
     if parsed == 0 {
         return Err("buckets must be greater than 0".to_string());
     }
@@ -683,14 +688,14 @@ impl TimeseriesBucket {
 
 fn parse_tail_param(query: Option<&str>, max_tail: usize) -> std::result::Result<usize, String> {
     let mut tail = 0usize;
-    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
+    visit_query_params(query, |key, value| {
         if key == "tail" {
-            let requested = value
-                .parse::<usize>()
-                .map_err(|err| format!("invalid tail query parameter: {err}"))?;
+            let requested =
+                parse_usize_param(value, |err| format!("invalid tail query parameter: {err}"))?;
             tail = requested.min(max_tail);
         }
-    }
+        Ok(())
+    })?;
     Ok(tail)
 }
 
@@ -709,9 +714,7 @@ fn parse_cursor(raw: &str) -> std::result::Result<ListCursor, String> {
 }
 
 fn parse_limit(raw: &str) -> std::result::Result<usize, String> {
-    let limit = raw
-        .parse::<usize>()
-        .map_err(|err| format!("invalid limit query parameter: {err}"))?;
+    let limit = parse_usize_param(raw, |err| format!("invalid limit query parameter: {err}"))?;
     if limit == 0 {
         return Err("limit must be greater than 0".to_string());
     }
@@ -719,17 +722,7 @@ fn parse_limit(raw: &str) -> std::result::Result<usize, String> {
 }
 
 fn parse_u64_query(field: &str, raw: &str) -> std::result::Result<u64, String> {
-    raw.parse::<u64>()
-        .map_err(|err| format!("invalid {field} query parameter: {err}"))
-}
-
-fn optional_text(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
-}
-
-fn optional_upper_text(raw: &str) -> Option<String> {
-    optional_text(raw).map(|value| value.to_ascii_uppercase())
+    parse_u64_param(raw, |err| format!("invalid {field} query parameter: {err}"))
 }
 
 impl PluginStatsKind {
