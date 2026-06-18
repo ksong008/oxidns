@@ -25,7 +25,9 @@ use crate::infra::network::listen;
 use crate::infra::network::transport::udp_transport::UdpTransport;
 use crate::infra::observability::metrics::{register_metric_source, unregister_metric_source};
 use crate::plugin::dependency::DependencySpec;
-use crate::plugin::server::{RequestHandle, Server, ServerMetrics, parse_listen_addr};
+use crate::plugin::server::{
+    RequestHandle, Server, ServerMetrics, default_request_limiter, parse_listen_addr,
+};
 use crate::plugin::{Plugin, PluginFactory};
 use crate::plugin_factory;
 
@@ -283,6 +285,7 @@ impl PluginFactory for UdpServerFactory {
                 request_handle: Arc::new(RequestHandle {
                     entry_executor,
                     metrics: Some(metrics.clone()),
+                    request_limiter: Some(default_request_limiter()),
                 }),
                 metrics,
                 shutdown_tx: watch::channel(false).0,

@@ -41,7 +41,7 @@ use crate::infra::system::deserialize_duration_option;
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::server::{
     ConnectionGuard, DEFAULT_SERVER_IDLE_TIMEOUT, RequestHandle, RequestMeta, Server,
-    ServerMetrics, parse_listen_addr,
+    ServerMetrics, default_request_limiter, parse_listen_addr,
 };
 use crate::plugin::{Plugin, PluginFactory};
 use crate::plugin_factory;
@@ -472,6 +472,7 @@ impl PluginFactory for TcpServerFactory {
                 request_handle: Arc::new(RequestHandle {
                     entry_executor,
                     metrics: Some(metrics.clone()),
+                    request_limiter: Some(default_request_limiter()),
                 }),
                 metrics,
                 #[cfg(feature = "server-dot")]

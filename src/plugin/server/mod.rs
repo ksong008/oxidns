@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 use tracing::{Level, debug, event_enabled, warn};
 
 use crate::core::context::DnsContext;
@@ -48,9 +49,39 @@ pub mod udp;
 /// Default idle timeout applied to TCP / DoT / DoH connections. Shared across
 /// `tcp.rs` and `http/` so a build without DoH still has a sane default.
 pub(crate) const DEFAULT_SERVER_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const DEFAULT_MAX_INFLIGHT_REQUESTS: usize = 4096;
 
 pub trait Server: Plugin {
     fn run(&self);
+}
+
+#[derive(Debug)]
+pub(crate) struct ServerRequestLimiter {
+    max_inflight: usize,
+    permits: Arc<Semaphore>,
+}
+
+impl ServerRequestLimiter {
+    fn new(max_inflight: usize) -> Self {
+        Self {
+            max_inflight,
+            permits: Arc::new(Semaphore::new(max_inflight)),
+        }
+    }
+
+    #[inline]
+    fn try_acquire(&self) -> std::result::Result<OwnedSemaphorePermit, TryAcquireError> {
+        self.permits.clone().try_acquire_owned()
+    }
+
+    #[cfg(test)]
+    fn max_inflight(&self) -> usize {
+        self.max_inflight
+    }
+}
+
+pub(crate) fn default_request_limiter() -> Arc<ServerRequestLimiter> {
+    Arc::new(ServerRequestLimiter::new(DEFAULT_MAX_INFLIGHT_REQUESTS))
 }
 
 pub(crate) struct ConnectionGuard {
@@ -211,6 +242,7 @@ pub struct RequestHandle {
     /// Shared server metrics. `None` for internal/test handles that should not
     /// emit server-level metrics.
     pub(crate) metrics: Option<Arc<ServerMetrics>>,
+    pub(crate) request_limiter: Option<Arc<ServerRequestLimiter>>,
 }
 pub use crate::core::context::RequestMeta;
 
@@ -229,6 +261,11 @@ pub struct RequestResult {
     pub exit: RequestExit,
 }
 
+enum RequestPermitDecision {
+    Acquired(Option<OwnedSemaphorePermit>),
+    Rejected,
+}
+
 impl RequestHandle {
     #[hotpath::measure]
     pub async fn handle_request(
@@ -238,6 +275,12 @@ impl RequestHandle {
         meta: RequestMeta,
     ) -> RequestResult {
         let metrics_start = self.metrics.as_ref().map(|m| m.on_request_start());
+        let _request_permit = match self.acquire_request_permit(&msg, src_addr) {
+            RequestPermitDecision::Acquired(permit) => permit,
+            RequestPermitDecision::Rejected => {
+                return self.build_limit_exceeded_result(&msg, metrics_start);
+            }
+        };
 
         let mut context = DnsContext::new(canonicalize_addr(src_addr), msg);
 
@@ -310,6 +353,59 @@ impl RequestHandle {
     }
 
     #[inline]
+    fn acquire_request_permit(
+        &self,
+        request: &Message,
+        src_addr: SocketAddr,
+    ) -> RequestPermitDecision {
+        let Some(limiter) = self.request_limiter.as_ref() else {
+            return RequestPermitDecision::Acquired(None);
+        };
+
+        match limiter.try_acquire() {
+            Ok(permit) => RequestPermitDecision::Acquired(Some(permit)),
+            Err(TryAcquireError::NoPermits) => {
+                debug!(
+                    source = %src_addr,
+                    request_id = request.id(),
+                    max_inflight = limiter.max_inflight,
+                    "server request limit reached; responding with SERVFAIL"
+                );
+                RequestPermitDecision::Rejected
+            }
+            Err(TryAcquireError::Closed) => {
+                warn!(
+                    source = %src_addr,
+                    request_id = request.id(),
+                    "server request limiter closed; responding with SERVFAIL"
+                );
+                RequestPermitDecision::Rejected
+            }
+        }
+    }
+
+    #[inline]
+    fn build_limit_exceeded_result(
+        &self,
+        request: &Message,
+        metrics_start: Option<u64>,
+    ) -> RequestResult {
+        let exit = RequestExit::Failed;
+        let mut response = request.response(Rcode::ServFail);
+        Self::finalize_response(request, &mut response);
+
+        if let (Some(metrics), Some(start_ms)) = (self.metrics.as_ref(), metrics_start) {
+            metrics.on_request_finish(start_ms, exit);
+        }
+
+        RequestResult {
+            request: request.clone(),
+            response,
+            exit,
+        }
+    }
+
+    #[inline]
     fn apply_request_meta(&self, context: &mut DnsContext, meta: RequestMeta) {
         context.set_request_meta(RequestMeta {
             server_name: meta.server_name.filter(|value| !value.is_empty()),
@@ -375,6 +471,7 @@ fn canonicalize_addr(addr: SocketAddr) -> SocketAddr {
 mod tests {
     use std::net::Ipv6Addr;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
 
@@ -412,6 +509,7 @@ mod tests {
         RequestHandle {
             entry_executor: executor,
             metrics: None,
+            request_limiter: None,
         }
     }
 
@@ -495,6 +593,35 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct CountingExecutor {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Plugin for CountingExecutor {
+        fn tag(&self) -> &str {
+            "counting"
+        }
+
+        async fn init(&mut self, _context: &crate::plugin::PluginInitContext<'_>) -> Result<()> {
+            Ok(())
+        }
+
+        async fn destroy(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Executor for CountingExecutor {
+        async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            context.set_response(context.request.response(Rcode::NoError));
+            Ok(ExecStep::Next)
+        }
+    }
+
     #[tokio::test]
     async fn test_handle_request_with_meta_applies_server_name_and_url_path() {
         let observed = Arc::new(Mutex::new(None));
@@ -541,5 +668,39 @@ mod tests {
 
         assert_eq!(result.response.rcode(), Rcode::NXDomain);
         assert_eq!(result.exit, RequestExit::Completed);
+    }
+
+    #[tokio::test]
+    async fn test_handle_request_returns_servfail_when_inflight_limit_is_full() {
+        let limiter = Arc::new(ServerRequestLimiter::new(1));
+        let _held_permit = limiter.try_acquire().expect("permit should be available");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let request_handle = RequestHandle {
+            entry_executor: Arc::new(CountingExecutor {
+                calls: calls.clone(),
+            }),
+            metrics: None,
+            request_limiter: Some(limiter),
+        };
+        let request = make_request(31, "limited.example.");
+
+        let result = request_handle
+            .handle_request(
+                request,
+                SocketAddr::from(([127, 0, 0, 1], 5303)),
+                RequestMeta::default(),
+            )
+            .await;
+
+        assert_eq!(result.response.rcode(), Rcode::ServFail);
+        assert_eq!(result.exit, RequestExit::Failed);
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_default_request_limiter_uses_internal_limit() {
+        let limiter = default_request_limiter();
+
+        assert_eq!(limiter.max_inflight(), DEFAULT_MAX_INFLIGHT_REQUESTS);
     }
 }

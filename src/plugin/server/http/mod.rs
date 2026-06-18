@@ -32,7 +32,9 @@ use crate::infra::observability::metrics::{register_metric_source, unregister_me
 use crate::infra::system::deserialize_duration_option;
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::server::http::http_dispatcher::{DnsGetHandler, DnsPostHandler, HttpDispatcher};
-use crate::plugin::server::{RequestHandle, Server, ServerMetrics, parse_listen_addr};
+use crate::plugin::server::{
+    RequestHandle, Server, ServerMetrics, default_request_limiter, parse_listen_addr,
+};
 use crate::plugin::{Plugin, PluginFactory};
 use crate::plugin_factory;
 
@@ -402,6 +404,7 @@ impl PluginFactory for HttpServerFactory {
 
         // Create HTTP dispatcher for routing requests
         let mut dispatcher = HttpDispatcher::new();
+        let request_limiter = default_request_limiter();
 
         // Register routes for each configured entry
         // Each entry maps a path to an executor that processes DNS queries
@@ -414,6 +417,7 @@ impl PluginFactory for HttpServerFactory {
             let request_handle = Arc::new(RequestHandle {
                 entry_executor: executor,
                 metrics: Some(metrics.clone()),
+                request_limiter: Some(request_limiter.clone()),
             });
 
             // Register GET route (DoH RFC 8484: DNS query in URL parameter)

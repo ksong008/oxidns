@@ -438,6 +438,7 @@ mod tests {
         Arc::new(RequestHandle {
             entry_executor: Arc::new(CaptureAndRespondExecutor { observed }),
             metrics: None,
+            request_limiter: None,
         })
     }
 
