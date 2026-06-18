@@ -1023,6 +1023,11 @@ export const zhCNPluginDefined = {
           label: "清理周期(小时)",
           description: "定义过期清理任务的执行周期。",
         },
+        reader_concurrency: {
+          label: "读取并发数",
+          description:
+            "限制 query_recorder API/统计读取侧同时运行的 SQLite reader 数量，避免 WebUI 或 API 突发请求占用过多阻塞线程和内存。",
+        },
       },
     },
     metrics_collector: {

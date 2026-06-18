@@ -1139,6 +1139,11 @@ export const enUSPluginDefined = {
           label: "Cleanup interval (hours)",
           description: "Defines how often the expired-data cleanup task runs.",
         },
+        reader_concurrency: {
+          label: "Reader concurrency",
+          description:
+            "Limits how many SQLite readers may run concurrently for query_recorder API/statistics reads, preventing WebUI or API bursts from occupying too many blocking threads and too much memory.",
+        },
       },
     },
     metrics_collector: {

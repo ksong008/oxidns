@@ -254,6 +254,8 @@ export const zhCNDocs = {
       "- 类型：`integer`；必填：否；默认值：`7`\n- 最小值：`1`\n- 作用：定义日志保留天数；过期数据会被定时实际删除。",
     cleanup_interval_hours:
       "- 类型：`integer`；必填：否；默认值：`1`\n- 最小值：`1`\n- 作用：定义过期清理任务的执行周期。",
+    reader_concurrency:
+      "- 类型：`integer`；必填：否；默认值：`2`\n- 最小值：`1`\n- 作用：限制 query_recorder API/统计读取侧同时运行的 SQLite reader 数量，避免 WebUI 或 API 突发请求占用过多阻塞线程和内存。",
   },
   metrics_collector: {
     name: '- 类型：`string`；必填：否；默认值：`"default"`\n- 作用：定义当前指标收集器的名称标签。',

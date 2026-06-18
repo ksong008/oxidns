@@ -258,6 +258,8 @@ export const enUSDocs = {
       "- Type: `integer`; required: no; default value: `7`\n- Minimum value: `1`\n- Function: Define how many days logs are retained; expired data is periodically deleted.",
     cleanup_interval_hours:
       "- Type: `integer`; required: no; default value: `1`\n- Minimum value: `1`\n- Function: Define how often the expired-data cleanup task runs.",
+    reader_concurrency:
+      "- Type: `integer`; required: no; default value: `2`\n- Minimum value: `1`\n- Function: Limit how many SQLite readers may run concurrently for query_recorder API/statistics reads, preventing WebUI or API bursts from occupying too many blocking threads and too much memory.",
   },
   metrics_collector: {
     name: '- Type: `string`; Required: No; Default value: `"default"`\n- Function: Define the name label of the current indicator collector.',
