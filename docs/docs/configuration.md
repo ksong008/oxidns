@@ -431,7 +431,7 @@ api:
 
 - 立即基于当前 request 构造一个 DNS 响应，并结束当前 `sequence`。
 - 默认 `rcode` 为 `REFUSED`，所以 `reject` 等价于拒绝请求。
-- 可以显式写十进制数值或英文 RCODE 名称；英文名称大小写不敏感，例如：
+- 可以显式写十进制数值或英文 RCODE 名称；英文名称大小写不敏感。常见映射与含义见 [DNS 编码速查表](dns-codes.md#rcode-响应码)，例如：
   - `reject 2` => `SERVFAIL`
   - `reject SERVFAIL` / `reject servfail` => `SERVFAIL`
   - `reject 3` => `NXDOMAIN`

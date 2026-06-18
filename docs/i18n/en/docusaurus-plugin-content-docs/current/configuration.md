@@ -430,7 +430,7 @@ Besides calling plugins, `sequence.args[].exec` can also use built-in control fl
 
 - Builds a DNS response from the current request immediately and ends the current `sequence`.
 - The default `rcode` is `REFUSED`, so plain `reject` means “reject this request”.
-- A decimal numeric code or English RCODE name can be provided explicitly; English names are case-insensitive, for example:
+- A decimal numeric code or English RCODE name can be provided explicitly; English names are case-insensitive. Common mappings and meanings are listed in the [DNS Code Reference](dns-codes.md#rcode-response-codes), for example:
   - `reject 2` => `SERVFAIL`
   - `reject SERVFAIL` / `reject servfail` => `SERVFAIL`
   - `reject 3` => `NXDOMAIN`

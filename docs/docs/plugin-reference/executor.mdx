@@ -109,7 +109,7 @@ import Admonition from "@theme/Admonition";
 
 - 立即生成响应并结束当前 `sequence`。
 - 默认 `rcode` 为 `REFUSED`。
-- 支持十进制数值和大小写不敏感的英文 RCODE 名称，例如 `reject 2`、`reject SERVFAIL`、`reject servfail`、`reject NXDOMAIN`。
+- 支持十进制数值和大小写不敏感的英文 RCODE 名称，例如 `reject 2`、`reject SERVFAIL`、`reject servfail`、`reject NXDOMAIN`；常见映射与含义见 [DNS 编码速查表](../dns-codes.md#rcode-响应码)。
 - 只支持基础 DNS RCODE `0..15`；扩展 RCODE 需要 EDNS OPT，不会由该内建动作自动生成。
 - `reject 0` 返回普通 `NOERROR` 响应，不会自动附加 SOA。
 - 会中断后续规则，不再继续执行。
