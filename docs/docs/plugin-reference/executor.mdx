@@ -1660,6 +1660,8 @@ old-static.example.com static.example.net
     retention_days: 7
     # 定时清理周期，单位小时；最小 1
     cleanup_interval_hours: 1
+    # SQLite 读取侧最大并发数；最小 1
+    reader_concurrency: 2
 ```
 
 ### 配置项
@@ -1701,6 +1703,12 @@ old-static.example.com static.example.net
 - 最小值：`1`
 - 作用：定义过期清理任务的执行周期。
 
+#### `reader_concurrency`
+
+- 类型：`integer`；必填：否；默认值：`2`
+- 最小值：`1`
+- 作用：限制 WebUI / API 统计与历史查询同时运行的 SQLite reader 数量，避免突发读取在大库上占用过多阻塞线程和内存。
+
 ### 行为说明
 
 - 这是纯 executor 观察器，不会修改 `server` 收口逻辑。
@@ -1708,10 +1716,12 @@ old-static.example.com static.example.net
 - `next` 返回后立即提交记录；成功时记录当前 response，失败时记录 `error` 和空 response。
 - request / response 不保存 wire 数据，而是把问题区、RR、EDNS 等字段拆成 JSON 文本列。
 - `client_ip` 字段来自 OxiDNS 看到的传输层来源地址；如果前面有 systemd-resolved、dnsmasq、AdGuardHome、dae、clash 等本机转发链路，记录中可能只看到 `127.0.0.1`。
-- 每个 recorder 只使用两张表：
+- 每个 recorder 使用同一前缀下的版本化表：
   - `qr_<safe_tag>_<fnv64hex>_v1_records`
   - `qr_<safe_tag>_<fnv64hex>_v1_steps`
-- `records` 主表只保存固定字段集合；`steps` 表保存 `sequence` 路径事件，用于执行路径分析和命中率统计。
+  - `qr_<safe_tag>_<fnv64hex>_v1_questions`
+  - `qr_<safe_tag>_<fnv64hex>_v1_meta`
+- `records` 主表只保存固定字段集合；`steps` 表保存 `sequence` 路径事件，用于执行路径分析和命中率统计；`questions` 表是从 `questions_json` 派生的索引表，用于加速 qname/qtype 查询；`meta` 表记录已完成的派生表迁移。
 - 每个 recorder 独占自己的有界队列、SQLite 连接、后台写线程、内存 tail 和 SSE 广播器。
 - 默认假定不同 recorder 使用不同 `path`；v1 不做跨 recorder 写线程复用或路径协调。
 

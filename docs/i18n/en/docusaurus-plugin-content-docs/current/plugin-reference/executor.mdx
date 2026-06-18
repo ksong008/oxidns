@@ -1581,6 +1581,8 @@ Persists the entry request, the post-`next` response, and `sequence` execution-p
     retention_days: 7
     # Cleanup interval in hours; minimum 1
     cleanup_interval_hours: 1
+    # Maximum concurrent SQLite readers; minimum 1
+    reader_concurrency: 2
 ```
 
 ### Configuration Details
@@ -1620,6 +1622,11 @@ Persists the entry request, the post-`next` response, and `sequence` execution-p
 - Type: `integer`; Required: no; Default: `1`; Minimum: `1`
 - Purpose: Cleanup task cadence.
 
+#### `reader_concurrency`
+
+- Type: `integer`; Required: no; Default: `2`; Minimum: `1`
+- Purpose: Limits concurrent SQLite readers used by WebUI / API history and stats queries, so read bursts on large recorder databases do not occupy too many blocking threads or too much memory.
+
 ### Behavior
 
 - This is a pure executor observer and does not change server finalization logic.
@@ -1627,10 +1634,12 @@ Persists the entry request, the post-`next` response, and `sequence` execution-p
 - Successful runs store the current response. Failed runs store `error` and an empty response shape.
 - Request and response payloads are not stored as wire blobs. Question, RR, and EDNS fields are extracted into JSON text columns.
 - The `client_ip` field comes from the transport source address seen by OxiDNS; if a local forwarding chain such as systemd-resolved, dnsmasq, AdGuardHome, dae, or clash sits in front, rows may show only `127.0.0.1`.
-- Each recorder uses exactly two tables:
+- Each recorder uses versioned tables under the same prefix:
   - `qr_<safe_tag>_<fnv64hex>_v1_records`
   - `qr_<safe_tag>_<fnv64hex>_v1_steps`
-- `records` contains only the fixed schema fields for structured snapshots. `steps` stores `sequence` path events for path analysis and hit-rate reporting.
+  - `qr_<safe_tag>_<fnv64hex>_v1_questions`
+  - `qr_<safe_tag>_<fnv64hex>_v1_meta`
+- `records` contains only the fixed schema fields for structured snapshots. `steps` stores `sequence` path events for path analysis and hit-rate reporting. `questions` is a derived index table from `questions_json` for faster qname/qtype queries. `meta` records completed derived-table migrations.
 - Every recorder owns its own bounded queue, SQLite connection, writer thread, tail buffer, and SSE broadcaster.
 - v1 assumes different recorders use different `path` values. There is no cross-recorder writer sharing or path coordination.
 
