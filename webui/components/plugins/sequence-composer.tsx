@@ -1540,7 +1540,9 @@ function ActionEditor({
                   })
                 }
                 placeholder={
-                  action.control === "reject" ? "0 soa / 3" : "1,2,3"
+                  action.control === "reject"
+                    ? "NOERROR / SERVFAIL / 3"
+                    : "1,2,3"
                 }
                 className="h-8 max-w-[16rem] w-full font-mono text-xs"
                 disabled={readOnly}

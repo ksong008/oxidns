@@ -13,10 +13,10 @@ use crate::infra::error::{DnsError, Result};
 use crate::plugin::executor::sequence::{
     PluginRef, Rule, parse_control_flow_sequence_tag, parse_matcher_expr,
 };
-use crate::plugin::executor::{ExecStep, Executor, synthetic_response};
+use crate::plugin::executor::{ExecStep, Executor};
 use crate::plugin::matcher::{Matcher, MatcherRef};
 use crate::plugin::{PluginHolder, PluginInitContext};
-use crate::proto::{Message, RData, Rcode};
+use crate::proto::Rcode;
 
 #[cfg(feature = "_sequence-step-recording")]
 macro_rules! record_sequence_event {
@@ -36,27 +36,17 @@ enum BuiltinOp {
     Accept,
     /// Stop current sequence execution and return to caller.
     Return,
-    /// Build and set a DNS response with the specified numeric rcode, then
-    /// stop.
+    /// Build and set a DNS response with the specified rcode, then stop.
     ///
-    /// Sequence config currently accepts only decimal numeric rcode values such
-    /// as `reject 2`; mnemonic names like `SERVFAIL` are not parsed here. The
-    /// explicit `reject 0 soa` form returns a NODATA-style NOERROR response
-    /// with an SOA in the authority section.
-    Reject { rcode: Rcode, soa: bool },
+    /// Sequence config accepts decimal numeric rcode values such as `reject 2`
+    /// and mnemonic names such as `reject SERVFAIL`.
+    Reject { rcode: Rcode },
     /// Execute another sequence executor, then continue current program.
     Jump(Arc<dyn Executor>),
     /// Execute another sequence executor and stop current program immediately.
     Goto(Arc<dyn Executor>),
     /// Insert marks into context and continue execution.
     Mark(AHashSet<u32>),
-}
-
-const SEQUENCE_REJECT_SOA_TTL: u32 = 300;
-
-lazy_static::lazy_static! {
-    static ref SEQUENCE_REJECT_SOA_RDATA: Arc<RData> =
-        synthetic_response::fake_soa_rdata(SEQUENCE_REJECT_SOA_TTL);
 }
 
 #[derive(Debug)]
@@ -292,13 +282,8 @@ impl ChainProgram {
                 );
                 Ok(InstructionFlow::Complete(ExecStep::Return))
             }
-            BuiltinOp::Reject { rcode, soa } => {
-                let response = if *soa {
-                    build_reject_soa_response(context.request())
-                } else {
-                    context.request().response(*rcode)
-                };
-                context.set_response(response);
+            BuiltinOp::Reject { rcode } => {
+                context.set_response(context.request().response(*rcode));
                 record_sequence_event!(
                     self,
                     context,
@@ -414,20 +399,6 @@ impl ChainProgram {
             outcome,
         ));
     }
-}
-
-fn build_reject_soa_response(request: &Message) -> Message {
-    let mut response = request.response(Rcode::NoError);
-    if let Some(question) = request.first_question() {
-        synthetic_response::add_fake_soa_authority(
-            &mut response,
-            question,
-            SEQUENCE_REJECT_SOA_TTL,
-            question.qclass(),
-            SEQUENCE_REJECT_SOA_RDATA.clone(),
-        );
-    }
-    response
 }
 
 #[cfg(feature = "_sequence-step-recording")]
@@ -669,25 +640,33 @@ fn parse_reject_builtin(arg: Option<&str>) -> Result<BuiltinOp> {
     let Some(raw) = arg else {
         return Ok(BuiltinOp::Reject {
             rcode: Rcode::Refused,
-            soa: false,
         });
     };
 
-    if raw == "0 soa" {
-        return Ok(BuiltinOp::Reject {
-            rcode: Rcode::NoError,
-            soa: true,
-        });
+    let mut tokens = raw.split_whitespace();
+    let code_token = tokens
+        .next()
+        .ok_or_else(|| DnsError::plugin("invalid code argument: reject requires an rcode"))?;
+
+    if let Some(extra) = tokens.next() {
+        return Err(DnsError::plugin(format!(
+            "invalid reject argument '{}': reject expects at most one rcode argument",
+            extra
+        )));
     }
 
-    let code = raw.parse::<u16>().map_err(|_| {
-        DnsError::plugin("invalid code argument: reject expects a decimal numeric rcode")
+    let rcode = Rcode::from_token(code_token).ok_or_else(|| {
+        DnsError::plugin(
+            "invalid code argument: reject expects a decimal numeric rcode or mnemonic rcode name",
+        )
     })?;
+    if rcode.has_extended_bits() {
+        return Err(DnsError::plugin(
+            "invalid code argument: reject only supports base DNS rcodes 0..15",
+        ));
+    }
 
-    Ok(BuiltinOp::Reject {
-        rcode: Rcode::from(code),
-        soa: false,
-    })
+    Ok(BuiltinOp::Reject { rcode })
 }
 
 /// Parse optional `mark` arguments into normalized mark strings.
@@ -974,7 +953,6 @@ mod tests {
             vec![
                 builtin_instruction(BuiltinOp::Reject {
                     rcode: Rcode::ServFail,
-                    soa: false,
                 }),
                 executor_instruction(skipped),
             ],
@@ -1021,7 +999,6 @@ mod tests {
             "test_sequence".to_string(),
             vec![builtin_instruction(BuiltinOp::Reject {
                 rcode: Rcode::ServFail,
-                soa: false,
             })],
         ));
         let mut context = make_context();
@@ -1039,7 +1016,6 @@ mod tests {
             "test_sequence".to_string(),
             vec![builtin_instruction(BuiltinOp::Reject {
                 rcode: Rcode::NoError,
-                soa: false,
             })],
         ));
         let mut context = make_context();
@@ -1051,33 +1027,6 @@ mod tests {
         assert_eq!(response.rcode(), Rcode::NoError);
         assert!(response.answers().is_empty());
         assert!(response.authorities().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_run_reject_noerror_soa_builds_soa_response() {
-        let program = Arc::new(ChainProgram::new(
-            "test_sequence".to_string(),
-            vec![builtin_instruction(BuiltinOp::Reject {
-                rcode: Rcode::NoError,
-                soa: true,
-            })],
-        ));
-        let mut context = make_context();
-
-        program.run(&mut context).await.unwrap();
-
-        let response = context
-            .response()
-            .expect("reject 0 soa should build response");
-        assert_eq!(response.id(), 42);
-        assert_eq!(response.rcode(), Rcode::NoError);
-        assert!(response.answers().is_empty());
-        assert_eq!(response.authorities().len(), 1);
-        assert_eq!(
-            response.authorities()[0].rr_type(),
-            crate::proto::RecordType::SOA
-        );
-        assert_eq!(response.authorities()[0].ttl(), SEQUENCE_REJECT_SOA_TTL);
     }
 
     #[tokio::test]
@@ -1096,30 +1045,87 @@ mod tests {
             op,
             Some(BuiltinOp::Reject {
                 rcode: Rcode::Refused,
-                soa: false
             })
         ));
     }
 
     #[tokio::test]
-    async fn test_parse_builtin_reject_accepts_noerror_soa_option() {
+    async fn test_parse_builtin_reject_rejects_extra_arguments() {
         let registry = crate::plugin::test_utils::test_registry();
         let create_context = PluginCreateContext::default();
         let init_context = PluginInitContext::new(registry, "seq", &create_context);
         let mut builder = ChainBuilder::new(&init_context, "seq".to_string());
 
-        let op = builder
-            .parse_builtin("reject 0 soa", 0)
+        builder
+            .parse_builtin("reject 0 extra", 0)
             .await
-            .expect("reject 0 soa should parse");
+            .expect_err("reject should not accept extra arguments");
+    }
 
-        assert!(matches!(
-            op,
-            Some(BuiltinOp::Reject {
-                rcode: Rcode::NoError,
-                soa: true
-            })
-        ));
+    #[tokio::test]
+    async fn test_parse_builtin_reject_accepts_text_rcode_case_insensitive() {
+        let registry = crate::plugin::test_utils::test_registry();
+        let create_context = PluginCreateContext::default();
+        let init_context = PluginInitContext::new(registry, "seq", &create_context);
+        let mut builder = ChainBuilder::new(&init_context, "seq".to_string());
+
+        for expr in ["reject SERVFAIL", "reject servfail", "reject ServFail"] {
+            let op = builder
+                .parse_builtin(expr, 0)
+                .await
+                .unwrap_or_else(|_| panic!("{expr} should parse"));
+
+            assert!(matches!(
+                op,
+                Some(BuiltinOp::Reject {
+                    rcode: Rcode::ServFail,
+                })
+            ));
+        }
+
+        for expr in ["reject NXDOMAIN", "reject nxdomain"] {
+            let op = builder
+                .parse_builtin(expr, 0)
+                .await
+                .unwrap_or_else(|_| panic!("{expr} should parse"));
+
+            assert!(matches!(
+                op,
+                Some(BuiltinOp::Reject {
+                    rcode: Rcode::NXDomain,
+                })
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parse_builtin_reject_rejects_invalid_text_rcode() {
+        let registry = crate::plugin::test_utils::test_registry();
+        let create_context = PluginCreateContext::default();
+        let init_context = PluginInitContext::new(registry, "seq", &create_context);
+        let mut builder = ChainBuilder::new(&init_context, "seq".to_string());
+
+        builder
+            .parse_builtin("reject BAD_RCODE", 0)
+            .await
+            .expect_err("unknown text rcode should be rejected");
+    }
+
+    #[tokio::test]
+    async fn test_parse_builtin_reject_rejects_extended_rcode() {
+        let registry = crate::plugin::test_utils::test_registry();
+        let create_context = PluginCreateContext::default();
+        let init_context = PluginInitContext::new(registry, "seq", &create_context);
+        let mut builder = ChainBuilder::new(&init_context, "seq".to_string());
+
+        builder
+            .parse_builtin("reject 16", 0)
+            .await
+            .expect_err("extended rcode should require EDNS and be rejected");
+        builder
+            .parse_builtin("reject BADVERS", 0)
+            .await
+            .expect_err("extended text rcode should require EDNS and be rejected");
     }
 
     #[tokio::test]

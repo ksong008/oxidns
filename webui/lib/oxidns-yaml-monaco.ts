@@ -76,7 +76,12 @@ const topLevelKeys = [
   "init_order",
 ];
 const sequenceControls = ["accept", "return", "reject", "mark", "jump", "goto"];
-const sequenceControlExamples = ["reject 0", "reject 0 soa", "reject 3"];
+const sequenceControlExamples = [
+  "reject SERVFAIL",
+  "reject servfail",
+  "reject NOERROR",
+  "reject 3",
+];
 const logLevels = ["off", "trace", "debug", "info", "warn", "error"];
 
 // Sub-keys for top-level config sections derived from the Rust config structs.
