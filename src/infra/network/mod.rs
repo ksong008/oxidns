@@ -21,6 +21,7 @@
 //! - [`buffer_pool`]: shared reusable wire buffers for short-lived encoding and
 //!   transport writes;
 //! - [`dial`]: low-level outbound UDP/TCP/TLS/QUIC connection establishment;
+//! - [`ip`]: shared IP address normalization helpers;
 //! - [`listen`]: shared listen-address parsing helpers used by server and API
 //!   entry points.
 //! - [`proxy`]: outbound proxy parsing and proxy-aware TCP dialing;
@@ -33,6 +34,7 @@ pub mod buffer_pool;
 pub(crate) mod dial;
 #[cfg(feature = "_http-client")]
 pub mod http_client;
+pub(crate) mod ip;
 pub mod listen;
 pub mod proxy;
 #[cfg(any(feature = "_tls-client", feature = "_tls-server"))]
