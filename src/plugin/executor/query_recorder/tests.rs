@@ -119,6 +119,7 @@ fn test_table_names_include_tag_hash_and_version() {
     assert!(tables.records.ends_with("_v1_records"));
     assert!(tables.steps.ends_with("_v1_steps"));
     assert!(tables.questions.ends_with("_v1_questions"));
+    assert!(tables.meta.ends_with("_v1_meta"));
 }
 
 #[test]

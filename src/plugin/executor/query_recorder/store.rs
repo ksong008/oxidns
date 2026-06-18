@@ -24,6 +24,7 @@ use super::model::{
 use crate::infra::error::{DnsError, Result};
 
 const SCHEMA_VERSION: &str = "v1";
+const QUESTIONS_BACKFILL_MARKER: &str = "questions_backfilled";
 const CLEANUP_BATCH_SIZE: usize = 1_000;
 const PLUGIN_STATS_SAMPLE_LIMIT: usize = 10_000;
 const RECORD_ROW_COLUMNS: [&str; 27] = [
@@ -102,6 +103,7 @@ pub(super) fn table_names(tag: &str) -> TableNames {
         records: format!("{prefix}_records"),
         steps: format!("{prefix}_steps"),
         questions: format!("{prefix}_questions"),
+        meta: format!("{prefix}_meta"),
     }
 }
 
@@ -192,6 +194,10 @@ pub(crate) fn create_schema(conn: &mut Connection, tables: &TableNames) -> rusql
             PRIMARY KEY (record_id, question_index),
             FOREIGN KEY(record_id) REFERENCES {records}(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS {meta} (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS {records}_created_at_idx ON {records}(created_at_ms DESC);
         CREATE INDEX IF NOT EXISTS {records}_request_id_idx ON {records}(request_id);
         CREATE INDEX IF NOT EXISTS {records}_client_ip_idx ON {records}(client_ip);
@@ -216,9 +222,43 @@ pub(crate) fn create_schema(conn: &mut Connection, tables: &TableNames) -> rusql
             ON {steps}(record_id, kind);",
         records = tables.records,
         questions = tables.questions,
+        meta = tables.meta,
         steps = tables.steps,
     ))?;
-    backfill_questions(conn, tables)
+    backfill_questions_once(conn, tables)
+}
+
+fn backfill_questions_once(conn: &Connection, tables: &TableNames) -> rusqlite::Result<()> {
+    if questions_backfill_done(conn, tables)? {
+        return Ok(());
+    }
+
+    backfill_questions(conn, tables)?;
+    mark_questions_backfilled(conn, tables)
+}
+
+fn questions_backfill_done(conn: &Connection, tables: &TableNames) -> rusqlite::Result<bool> {
+    conn.query_row(
+        &format!(
+            "SELECT 1 FROM {} WHERE key = ?1 AND value = ?2",
+            tables.meta
+        ),
+        params![QUESTIONS_BACKFILL_MARKER, "true"],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|row| row.is_some())
+}
+
+fn mark_questions_backfilled(conn: &Connection, tables: &TableNames) -> rusqlite::Result<()> {
+    conn.execute(
+        &format!(
+            "INSERT OR REPLACE INTO {} (key, value) VALUES (?1, ?2)",
+            tables.meta
+        ),
+        params![QUESTIONS_BACKFILL_MARKER, "true"],
+    )?;
+    Ok(())
 }
 
 fn backfill_questions(conn: &Connection, tables: &TableNames) -> rusqlite::Result<()> {
@@ -1549,6 +1589,7 @@ mod tests {
             records: "records".to_string(),
             steps: "steps".to_string(),
             questions: "questions".to_string(),
+            meta: "meta".to_string(),
         };
         create_schema(&mut conn, &tables).unwrap();
 
@@ -1592,6 +1633,7 @@ mod tests {
             records: "records".to_string(),
             steps: "steps".to_string(),
             questions: "questions".to_string(),
+            meta: "meta".to_string(),
         };
         create_schema(&mut conn, &tables).unwrap();
 
@@ -1599,6 +1641,11 @@ mod tests {
         let detail = insert_record(&tx, &tables, sample_record_row(), Vec::new()).unwrap();
         tx.commit().unwrap();
         conn.execute("DELETE FROM questions", []).unwrap();
+        conn.execute(
+            "DELETE FROM meta WHERE key = ?1",
+            params![QUESTIONS_BACKFILL_MARKER],
+        )
+        .unwrap();
 
         create_schema(&mut conn, &tables).unwrap();
 
@@ -1610,6 +1657,30 @@ mod tests {
             )
             .unwrap();
         assert_eq!(question, ("example.com.".to_string(), "A".to_string()));
+    }
+
+    #[test]
+    fn test_create_schema_skips_question_backfill_after_marker() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        let tables = TableNames {
+            records: "records".to_string(),
+            steps: "steps".to_string(),
+            questions: "questions".to_string(),
+            meta: "meta".to_string(),
+        };
+        create_schema(&mut conn, &tables).unwrap();
+
+        let tx = conn.transaction().unwrap();
+        insert_record(&tx, &tables, sample_record_row(), Vec::new()).unwrap();
+        tx.commit().unwrap();
+        conn.execute("DELETE FROM questions", []).unwrap();
+
+        create_schema(&mut conn, &tables).unwrap();
+
+        let question_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM questions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(question_count, 0);
     }
 
     fn sample_record_row() -> RecordRow {

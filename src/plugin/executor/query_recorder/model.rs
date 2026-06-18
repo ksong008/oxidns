@@ -38,6 +38,7 @@ pub(super) struct TableNames {
     pub(super) records: String,
     pub(super) steps: String,
     pub(super) questions: String,
+    pub(super) meta: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

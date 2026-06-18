@@ -1112,6 +1112,14 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         type: "number",
         default: 1,
       },
+      {
+        key: "reader_concurrency",
+        description:
+          "限制 query_recorder API/统计读取侧同时运行的 SQLite reader 数量，避免 WebUI 或 API 突发请求占用过多阻塞线程和内存。",
+        label: "读取并发数",
+        type: "number",
+        default: 2,
+      },
     ],
   },
   {
