@@ -120,7 +120,14 @@ async fn query_doh_config(
         DeadlineOutcome::Expired => return Err(deadline.timeout_error()),
     };
     let mut response_bytes = response_buffer(&response);
-    while let Some(partial_bytes) = response.body_mut().data().await {
+    loop {
+        let partial_bytes = match deadline.run(response.body_mut().data()).await {
+            DeadlineOutcome::Completed(value) => value,
+            DeadlineOutcome::Expired => return Err(deadline.timeout_error()),
+        };
+        let Some(partial_bytes) = partial_bytes else {
+            break;
+        };
         response_bytes.put(
             partial_bytes
                 .map_err(|err| DnsError::protocol(format!("H2 response body error: {}", err)))?,
@@ -190,4 +197,26 @@ pub(super) fn response_buffer<T>(response: &http::Response<T>) -> BytesMut {
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(4096);
     BytesMut::with_capacity(capacity)
+}
+
+#[cfg(all(test, feature = "resolver-doh"))]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn test_doh_request_uri_preserves_bracketed_ipv6_literals() {
+        let config = NameserverConfig::new(
+            "https://[2001:4860:4860::8888]/dns-query",
+            None,
+            Duration::from_secs(5),
+            None,
+        )
+        .expect("IPv6 DoH nameserver should parse");
+
+        let uri = doh_request_uri(&config);
+
+        assert!(uri.starts_with("https://[2001:4860:4860::8888]/dns-query?dns="));
+    }
 }

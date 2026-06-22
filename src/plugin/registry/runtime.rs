@@ -70,6 +70,7 @@ impl PluginRuntimeManager {
             None
         };
         let _guard = self.lifecycle.lock().await;
+        let previous_outbound = outbound::global();
         outbound::install_global(&config.network.outbound)?;
 
         let mut candidate = PluginRegistry::new();
@@ -79,7 +80,7 @@ impl PluginRuntimeManager {
         let candidate = Arc::new(candidate);
         if let Err(err) = candidate.clone().init_plugins(config.plugins).await {
             candidate.destroy().await;
-            outbound::clear_global();
+            outbound::restore_global(previous_outbound);
             return Err(err);
         }
 

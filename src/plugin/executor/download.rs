@@ -335,7 +335,12 @@ impl PluginFactory for DownloadFactory {
 
         Ok(UninitializedPlugin::Executor(Box::new(DownloadExecutor {
             tag: tag.to_string(),
-            client: HttpClient::new(HttpClientOptions::new(false, None)),
+            client: HttpClient::new(HttpClientOptions::from_outbound(
+                false,
+                None,
+                None,
+                |raw| DnsError::plugin(format!("invalid download socks5 proxy '{}'", raw)),
+            )?),
             timeout: DEFAULT_TIMEOUT,
             downloads,
             insecure_skip_verify: false,

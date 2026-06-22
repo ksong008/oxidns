@@ -275,6 +275,12 @@ pub(crate) fn install_global(config: &NetworkOutboundConfig) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn restore_global(runtime: Arc<OutboundRuntime>) {
+    *global_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = runtime;
+}
+
 pub(crate) fn clear_global() {
     *global_slot()
         .lock()
@@ -331,5 +337,39 @@ mod tests {
             .resolve_policy(Some("oversea"), None)
             .expect("profile should resolve");
         assert!(policy.proxy().is_some());
+    }
+
+    #[test]
+    fn test_restore_global_reinstalls_previous_runtime() {
+        clear_global();
+        let first = NetworkOutboundConfig {
+            default: Some("first".to_string()),
+            profiles: HashMap::from([(
+                "first".to_string(),
+                OutboundProfileConfig {
+                    resolver: None,
+                    proxy: None,
+                },
+            )]),
+        };
+        let second = NetworkOutboundConfig {
+            default: Some("second".to_string()),
+            profiles: HashMap::from([(
+                "second".to_string(),
+                OutboundProfileConfig {
+                    resolver: None,
+                    proxy: None,
+                },
+            )]),
+        };
+
+        install_global(&first).expect("first outbound runtime should install");
+        let snapshot = global();
+        install_global(&second).expect("second outbound runtime should install");
+        restore_global(snapshot);
+
+        assert!(global().resolve_policy(Some("first"), None).is_ok());
+        assert!(global().resolve_policy(Some("second"), None).is_err());
+        clear_global();
     }
 }

@@ -60,9 +60,23 @@ fn build_client(config: NameserverConfig) -> Result<Arc<dyn NameserverClient>> {
 }
 
 fn effective_deadline(deadline: QueryDeadline, timeout: Duration) -> QueryDeadline {
-    if deadline.remaining().is_some() {
-        deadline
-    } else {
-        QueryDeadline::new(timeout)
+    let _ = timeout;
+    deadline
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infra::clock::AppClock;
+
+    #[test]
+    fn test_effective_deadline_preserves_expired_deadline() {
+        AppClock::start();
+        let deadline = QueryDeadline::new(Duration::ZERO);
+
+        let effective = effective_deadline(deadline, Duration::from_secs(5));
+
+        assert_eq!(effective, deadline);
+        assert!(effective.remaining().is_none());
     }
 }

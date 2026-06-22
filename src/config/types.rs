@@ -13,6 +13,7 @@ use serde_yaml_ng::Value;
 use thiserror::Error;
 
 use crate::infra::network::proxy::validate_socks5_syntax;
+use crate::infra::system::parse_simple_duration;
 
 /// Configuration validation errors
 #[derive(Debug, Error)]
@@ -294,6 +295,14 @@ impl OutboundResolverDetailedConfig {
                 profile_name
             )));
         }
+        if let Some(timeout) = &self.timeout {
+            parse_simple_duration(timeout).map_err(|err| {
+                ConfigError::InvalidNetworkOutbound(format!(
+                    "profile '{}' resolver.timeout is invalid: {}",
+                    profile_name, err
+                ))
+            })?;
+        }
 
         let resolver_uses_profile_proxy = matches!(
             self.proxy
@@ -372,6 +381,21 @@ fn parse_nameserver_addr(addr: &str) -> Option<ParsedNameserverAddr> {
     let url = url::Url::parse(candidate).ok()?;
     let host = url.host_str()?.to_string();
     let scheme = url.scheme().to_ascii_lowercase();
+    if !matches!(
+        scheme.as_str(),
+        "udp"
+            | "tcp"
+            | "tcp+pipeline"
+            | "tls"
+            | "tls+pipeline"
+            | "https"
+            | "doh"
+            | "h3"
+            | "quic"
+            | "doq"
+    ) {
+        return None;
+    }
     let proxy_unsupported = matches!(scheme.as_str(), "udp" | "doq" | "quic" | "h3");
     Some(ParsedNameserverAddr {
         scheme,
@@ -884,6 +908,55 @@ plugins:
         let err = config
             .validate()
             .expect_err("DoQ nameserver cannot use profile proxy");
+        assert!(matches!(err, ConfigError::InvalidNetworkOutbound(_)));
+    }
+
+    #[test]
+    fn test_validate_rejects_unsupported_outbound_nameserver_scheme() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        resolver:
+          nameservers:
+            - addr: ftp://1.1.1.1:53
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("unsupported nameserver scheme should fail");
+        assert!(matches!(err, ConfigError::InvalidNetworkOutbound(_)));
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_outbound_resolver_timeout() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        resolver:
+          nameservers:
+            - addr: 1.1.1.1:53
+          timeout: nope
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("invalid resolver timeout should fail");
         assert!(matches!(err, ConfigError::InvalidNetworkOutbound(_)));
     }
 
