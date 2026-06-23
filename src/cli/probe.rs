@@ -31,7 +31,11 @@ pub fn run(options: ProbeOptions) -> Result<()> {
 
 fn run_upstream(options: ProbeUpstreamOptions) -> Result<()> {
     prepare_working_dir(options.working_dir.as_ref())?;
-    prepare_outbound(options.config.as_ref(), options.timeout)?;
+    prepare_outbound(
+        options.config.as_ref(),
+        options.outbound.as_deref(),
+        options.timeout,
+    )?;
 
     let qtype = parse_record_type(&options.qtype)?;
     let probe_config = UpstreamProbeConfig {
@@ -92,9 +96,13 @@ fn prepare_working_dir(working_dir: Option<&PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn prepare_outbound(config_path: Option<&PathBuf>, timeout: Duration) -> Result<()> {
+fn prepare_outbound(
+    config_path: Option<&PathBuf>,
+    selected_outbound: Option<&str>,
+    timeout: Duration,
+) -> Result<()> {
     if let Some(config_path) = config_path {
-        let outbound_config = read_probe_outbound_config(config_path, timeout)?;
+        let outbound_config = read_probe_outbound_config(config_path, selected_outbound, timeout)?;
         outbound::install_global(&outbound_config)?;
     } else {
         outbound::clear_global();
@@ -104,6 +112,7 @@ fn prepare_outbound(config_path: Option<&PathBuf>, timeout: Duration) -> Result<
 
 fn read_probe_outbound_config(
     config_path: &Path,
+    selected_outbound: Option<&str>,
     timeout: Duration,
 ) -> Result<NetworkOutboundConfig> {
     let string = std::fs::read_to_string(config_path).map_err(|err| {
@@ -142,6 +151,7 @@ fn read_probe_outbound_config(
                 err
             ))
         })?;
+    retain_probe_outbound_profiles(&mut config, selected_outbound)?;
     config.validate().map_err(|err| {
         DnsError::config(format!(
             "invalid network.outbound in probe config {}: {}",
@@ -151,6 +161,35 @@ fn read_probe_outbound_config(
     })?;
     normalize_probe_outbound_proxies(&mut config, timeout)?;
     Ok(config)
+}
+
+fn retain_probe_outbound_profiles(
+    config: &mut NetworkOutboundConfig,
+    selected_outbound: Option<&str>,
+) -> Result<()> {
+    if selected_outbound.is_some_and(|name| name.trim().is_empty()) {
+        return Err(DnsError::config("probe outbound profile cannot be empty"));
+    }
+    let selected_profile = selected_outbound
+        .map(str::trim)
+        .map(ToOwned::to_owned)
+        .or_else(|| config.default.clone());
+
+    let Some(profile_name) = selected_profile else {
+        config.profiles.clear();
+        config.default = None;
+        return Ok(());
+    };
+    let profile = config.profiles.remove(&profile_name).ok_or_else(|| {
+        DnsError::config(format!(
+            "network.outbound profile '{}' selected by probe was not found",
+            profile_name
+        ))
+    })?;
+    config.profiles.clear();
+    config.profiles.insert(profile_name.clone(), profile);
+    config.default = Some(profile_name);
+    Ok(())
 }
 
 fn normalize_probe_outbound_proxies(
@@ -469,7 +508,7 @@ plugins:
         )
         .expect("config should write");
 
-        prepare_outbound(Some(&config_path), Duration::from_secs(1))
+        prepare_outbound(Some(&config_path), Some("remote"), Duration::from_secs(1))
             .expect("outbound-only config should load");
 
         let info = ConnectionInfo::try_from(UpstreamConfig {
@@ -520,11 +559,70 @@ network:
         )
         .expect("config should write");
 
-        let error = read_probe_outbound_config(&config_path, Duration::from_millis(10))
-            .expect_err("invalid outbound config should fail validation")
-            .to_string();
+        let error =
+            read_probe_outbound_config(&config_path, Some("remote"), Duration::from_millis(10))
+                .expect_err("invalid outbound config should fail validation")
+                .to_string();
 
         assert!(error.contains("requires dial_addr"), "{error}");
+    }
+
+    #[test]
+    fn retain_probe_outbound_profiles_keeps_only_selected_profile() {
+        let mut config = NetworkOutboundConfig {
+            default: Some("standby".to_string()),
+            profiles: HashMap::from([
+                (
+                    "remote".to_string(),
+                    OutboundProfileConfig {
+                        resolver: None,
+                        proxy: Some(OutboundProxyConfig::Socks5 {
+                            socks5: "proxy.example.com:1080".to_string(),
+                        }),
+                    },
+                ),
+                (
+                    "standby".to_string(),
+                    OutboundProfileConfig {
+                        resolver: None,
+                        proxy: Some(OutboundProxyConfig::Socks5 {
+                            socks5: "standby.example.com:1080".to_string(),
+                        }),
+                    },
+                ),
+            ]),
+        };
+
+        retain_probe_outbound_profiles(&mut config, Some("remote"))
+            .expect("selected profile should be retained");
+        normalize_probe_outbound_proxies_with(
+            &mut config,
+            Duration::from_millis(10),
+            |host, timeout| {
+                assert_eq!(host, "proxy.example.com");
+                assert_eq!(timeout, Duration::from_millis(10));
+                Ok(IpAddr::from(Ipv4Addr::LOCALHOST))
+            },
+        )
+        .expect("selected proxy should normalize");
+
+        assert_eq!(config.default.as_deref(), Some("remote"));
+        assert_eq!(config.profiles.len(), 1);
+        assert!(config.profiles.contains_key("remote"));
+    }
+
+    #[test]
+    fn retain_probe_outbound_profiles_rejects_missing_selected_profile() {
+        let mut config = NetworkOutboundConfig {
+            default: None,
+            profiles: HashMap::new(),
+        };
+
+        let error = retain_probe_outbound_profiles(&mut config, Some("missing"))
+            .expect_err("missing profile should fail")
+            .to_string();
+
+        assert!(error.contains("missing"), "{error}");
     }
 
     #[test]

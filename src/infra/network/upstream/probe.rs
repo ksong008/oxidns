@@ -240,7 +240,8 @@ where
         &mut progress,
     )
     .await;
-    refresh_target_resolution_after_pipeline(&mut target, &connection_info);
+    refresh_target_bootstrap_resolution(&mut target, &mut connection_info, &serial, &pipeline)
+        .await;
     let recommendation = recommendation(&serial, &pipeline);
     progress(ProbeProgress::Finished {
         serial: serial.verdict,
@@ -470,14 +471,29 @@ fn resolution_blocks_direct_probe(info: &ConnectionInfo, resolution: &Resolution
         && info.socks5.is_none()
 }
 
-fn refresh_target_resolution_after_pipeline(
+async fn refresh_target_bootstrap_resolution(
+    target: &mut UpstreamProbeTarget,
+    connection_info: &mut ConnectionInfo,
+    serial: &ProbeStageReport,
+    pipeline: &PipelineProbeReport,
+) {
+    if !target.uses_bootstrap || target.resolved_ip.is_some() {
+        return;
+    }
+    if serial.success_count == 0 && pipeline.success_count == 0 {
+        return;
+    }
+    if connection_info.remote_ip.is_none() && connection_info.bootstrap.is_some() {
+        let _ = resolve_bootstrap_remote_ip(connection_info).await;
+    }
+    refresh_target_from_connection_remote_ip(target, connection_info);
+}
+
+fn refresh_target_from_connection_remote_ip(
     target: &mut UpstreamProbeTarget,
     connection_info: &ConnectionInfo,
 ) {
-    if target.uses_bootstrap
-        && target.resolved_ip.is_none()
-        && let Some(remote_ip) = connection_info.remote_ip
-    {
+    if let Some(remote_ip) = connection_info.remote_ip {
         target.resolved_ip = Some(remote_ip.to_string());
         target.resolution_source = Some("bootstrap".to_string());
         target.resolution_error = None;
@@ -603,7 +619,7 @@ where
     if uses_single_connection_pipeline(connection_info.connection_type)
         && connection_info.remote_ip.is_none()
         && connection_info.bootstrap.is_some()
-        && let Err(err) = resolve_pipeline_remote_ip(connection_info).await
+        && let Err(err) = resolve_bootstrap_remote_ip(connection_info).await
     {
         return PipelineProbeReport::inconclusive(
             config.pipeline_concurrency,
@@ -671,7 +687,7 @@ fn uses_single_connection_pipeline(connection_type: ConnectionType) -> bool {
     matches!(connection_type, ConnectionType::TCP | ConnectionType::DoT)
 }
 
-async fn resolve_pipeline_remote_ip(connection_info: &mut ConnectionInfo) -> Result<()> {
+async fn resolve_bootstrap_remote_ip(connection_info: &mut ConnectionInfo) -> Result<()> {
     let Some(resolver) = connection_info.bootstrap.as_ref() else {
         return Ok(());
     };
@@ -1834,7 +1850,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_pipeline_remote_ip_retries_bootstrap_resolution() {
+    async fn resolve_bootstrap_remote_ip_retries_bootstrap_resolution() {
         let answer_ip = Ipv4Addr::new(192, 0, 2, 53);
         let resolver_addr = start_fake_bootstrap_resolver(answer_ip).await;
         let resolver = Arc::new(
@@ -1846,7 +1862,7 @@ mod tests {
         info.bootstrap = Some(resolver);
         info.timeout = Duration::from_millis(500);
 
-        resolve_pipeline_remote_ip(&mut info)
+        resolve_bootstrap_remote_ip(&mut info)
             .await
             .expect("pipeline bootstrap retry should resolve");
 
@@ -1856,7 +1872,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_target_resolution_after_pipeline_records_bootstrap_retry() {
+    fn refresh_target_from_connection_remote_ip_records_bootstrap_retry() {
         let mut target = UpstreamProbeTarget {
             address: "tcp://dns.example.invalid:53".to_string(),
             protocol: "tcp".to_string(),
@@ -1871,11 +1887,63 @@ mod tests {
             ConnectionInfo::with_addr("tcp://dns.example.invalid:53").expect("addr should parse");
         info.remote_ip = Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 53)));
 
-        refresh_target_resolution_after_pipeline(&mut target, &info);
+        refresh_target_from_connection_remote_ip(&mut target, &info);
 
         assert_eq!(target.resolved_ip.as_deref(), Some("192.0.2.53"));
         assert_eq!(target.resolution_source.as_deref(), Some("bootstrap"));
         assert_eq!(target.resolution_error, None);
+    }
+
+    #[tokio::test]
+    async fn refresh_target_bootstrap_resolution_retries_after_generic_success() {
+        let answer_ip = Ipv4Addr::new(192, 0, 2, 53);
+        let resolver_addr = start_fake_bootstrap_resolver(answer_ip).await;
+        let resolver = Arc::new(
+            NameResolver::new(vec![resolver_addr.to_string()], Some(4))
+                .expect("bootstrap resolver should build"),
+        );
+        let mut target = UpstreamProbeTarget {
+            address: "udp://dns.example.invalid:53".to_string(),
+            protocol: "udp".to_string(),
+            server_name: "dns.example.invalid".to_string(),
+            port: 53,
+            resolved_ip: None,
+            resolution_source: Some("bootstrap".to_string()),
+            uses_bootstrap: true,
+            resolution_error: Some("transient bootstrap failure".to_string()),
+        };
+        let mut info =
+            ConnectionInfo::with_addr("udp://dns.example.invalid:53").expect("addr should parse");
+        info.bootstrap = Some(resolver);
+        info.timeout = Duration::from_millis(500);
+        let serial = ProbeStageReport::from_results(
+            ProbeVerdict::Reachable,
+            vec![ProbeQueryResult {
+                index: 0,
+                query_name: "example.com.".to_string(),
+                query_id: 100,
+                ok: true,
+                latency_ms: Some(1),
+                response_id: Some(100),
+                rcode: Some("NOERROR".to_string()),
+                answer_count: Some(1),
+                authoritative: Some(false),
+                truncated: Some(false),
+                recursion_available: Some(true),
+                error_kind: None,
+                error: None,
+            }],
+        );
+        let pipeline = PipelineProbeReport::inconclusive(1, 1, "not run".to_string());
+
+        refresh_target_bootstrap_resolution(&mut target, &mut info, &serial, &pipeline).await;
+
+        assert_eq!(target.resolved_ip.as_deref(), Some("192.0.2.53"));
+        assert_eq!(target.resolution_source.as_deref(), Some("bootstrap"));
+        assert_eq!(target.resolution_error, None);
+        assert_eq!(info.remote_ip, Some(IpAddr::V4(answer_ip)));
+        assert!(info.bootstrap.is_none());
+        assert!(info.bootstrap_timeout.is_none());
     }
 
     #[test]
