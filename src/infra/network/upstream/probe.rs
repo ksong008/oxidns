@@ -234,7 +234,7 @@ where
         run_serial_probe(&connection_info, &config, &base_name, &mut progress).await?
     };
     let pipeline = run_pipeline_probe(
-        &connection_info,
+        &mut connection_info,
         &config,
         serial.success_count > 0,
         &mut progress,
@@ -537,7 +537,7 @@ where
 }
 
 async fn run_pipeline_probe<F>(
-    connection_info: &ConnectionInfo,
+    connection_info: &mut ConnectionInfo,
     config: &UpstreamProbeConfig,
     serial_reachable: bool,
     progress: &mut F,
@@ -568,12 +568,12 @@ where
     if uses_single_connection_pipeline(connection_info.connection_type)
         && connection_info.remote_ip.is_none()
         && connection_info.bootstrap.is_some()
+        && let Err(err) = resolve_pipeline_remote_ip(connection_info).await
     {
         return PipelineProbeReport::inconclusive(
             config.pipeline_concurrency,
             config.pipeline_rounds,
-            "bootstrap resolution failed; cannot open a direct pipeline probe connection"
-                .to_string(),
+            format!("bootstrap resolution failed before pipeline probe: {err}"),
         );
     }
 
@@ -634,6 +634,22 @@ where
 
 fn uses_single_connection_pipeline(connection_type: ConnectionType) -> bool {
     matches!(connection_type, ConnectionType::TCP | ConnectionType::DoT)
+}
+
+async fn resolve_pipeline_remote_ip(connection_info: &mut ConnectionInfo) -> Result<()> {
+    let Some(resolver) = connection_info.bootstrap.as_ref() else {
+        return Ok(());
+    };
+    let timeout = connection_info
+        .bootstrap_timeout
+        .unwrap_or(connection_info.timeout);
+    let ip = resolver
+        .resolve(&connection_info.server_name, QueryDeadline::new(timeout))
+        .await?;
+    connection_info.remote_ip = Some(ip);
+    connection_info.bootstrap = None;
+    connection_info.bootstrap_timeout = None;
+    Ok(())
 }
 
 async fn run_generic_concurrency_probe<F>(
@@ -1263,7 +1279,7 @@ fn recommendation(serial: &ProbeStageReport, pipeline: &PipelineProbeReport) -> 
 
 #[cfg(test)]
 mod tests {
-    use std::net::{Ipv4Addr, SocketAddr};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -1271,7 +1287,9 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
     use super::*;
-    use crate::proto::Rcode;
+    use crate::infra::network::resolver::NameResolver;
+    use crate::proto::rdata::A;
+    use crate::proto::{RData, Rcode, Record};
 
     #[derive(Clone, Copy)]
     enum FakeBehavior {
@@ -1334,6 +1352,32 @@ mod tests {
                     continue;
                 };
                 let response = response_for_request(request);
+                let Ok(bytes) = response.to_bytes() else {
+                    continue;
+                };
+                let _ = socket.send_to(&bytes, peer).await;
+            }
+        });
+        addr
+    }
+
+    async fn start_fake_bootstrap_resolver(answer_ip: Ipv4Addr) -> SocketAddr {
+        let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .await
+            .expect("bootstrap resolver socket should bind");
+        let addr = socket
+            .local_addr()
+            .expect("bootstrap resolver should have addr");
+        tokio::spawn(async move {
+            let mut buf = [0u8; 4096];
+            loop {
+                let Ok((len, peer)) = socket.recv_from(&mut buf).await else {
+                    break;
+                };
+                let Ok(request) = Message::from_bytes(&buf[..len]) else {
+                    continue;
+                };
+                let response = resolver_response_for_request(request, answer_ip);
                 let Ok(bytes) = response.to_bytes() else {
                     continue;
                 };
@@ -1422,6 +1466,20 @@ mod tests {
             .expect("request should have question")
             .clone();
         response_with_question(request.id(), question)
+    }
+
+    fn resolver_response_for_request(request: Message, answer_ip: Ipv4Addr) -> Message {
+        let question = request
+            .first_question()
+            .expect("resolver request should have question")
+            .clone();
+        let mut response = response_with_question(request.id(), question.clone());
+        response.add_answer(Record::from_rdata(
+            question.name().clone(),
+            60,
+            RData::A(A(answer_ip)),
+        ));
+        response
     }
 
     fn response_with_question(id: u16, question: Question) -> Message {
@@ -1628,6 +1686,28 @@ mod tests {
 
         assert!(started.elapsed() < Duration::from_millis(150));
         assert!(error.contains("SOCKS5 proxy resolution timed out"));
+    }
+
+    #[tokio::test]
+    async fn resolve_pipeline_remote_ip_retries_bootstrap_resolution() {
+        let answer_ip = Ipv4Addr::new(192, 0, 2, 53);
+        let resolver_addr = start_fake_bootstrap_resolver(answer_ip).await;
+        let resolver = Arc::new(
+            NameResolver::new(vec![resolver_addr.to_string()], Some(4))
+                .expect("bootstrap resolver should build"),
+        );
+        let mut info =
+            ConnectionInfo::with_addr("tcp://dns.example.invalid:53").expect("addr should parse");
+        info.bootstrap = Some(resolver);
+        info.timeout = Duration::from_millis(500);
+
+        resolve_pipeline_remote_ip(&mut info)
+            .await
+            .expect("pipeline bootstrap retry should resolve");
+
+        assert_eq!(info.remote_ip, Some(IpAddr::V4(answer_ip)));
+        assert!(info.bootstrap.is_none());
+        assert!(info.bootstrap_timeout.is_none());
     }
 
     #[test]

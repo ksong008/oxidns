@@ -515,7 +515,7 @@ network:
       remote:
         resolver:
           nameservers:
-            - addr: tls://dns.google:853
+            - addr: dns.google:53
 "#,
         )
         .expect("config should write");
