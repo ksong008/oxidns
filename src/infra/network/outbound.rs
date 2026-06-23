@@ -19,6 +19,7 @@ use crate::config::types::{
 };
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::deadline::QueryDeadline;
+use crate::infra::network::metrics::{self as network_metrics, NetworkProfileMetrics};
 use crate::infra::network::proxy::{Socks5Opt, parse_socks5_opt};
 use crate::infra::network::resolver::{NameResolver, NameserverConfig};
 use crate::infra::system::parse_simple_duration;
@@ -176,7 +177,7 @@ fn policy_from_profile(name: &str, profile: &OutboundProfileConfig) -> Result<Ou
             )));
         }
         Some(OutboundResolverConfig::Nameservers(config)) => {
-            resolver_from_nameservers(name, config, &proxy)?
+            resolver_from_nameservers(name, config, &proxy, network_metrics::profile_scope(name))?
         }
         None => ResolverPolicy::System,
     };
@@ -215,6 +216,7 @@ fn resolver_from_nameservers(
     name: &str,
     config: &OutboundResolverDetailedConfig,
     profile_proxy: &ProxyPolicy,
+    metrics: Arc<NetworkProfileMetrics>,
 ) -> Result<ResolverPolicy> {
     let timeout = match config.timeout.as_deref() {
         Some(raw) => parse_simple_duration(raw).map_err(|err| {
@@ -239,9 +241,10 @@ fn resolver_from_nameservers(
         .map(|nameserver| nameserver_config(nameserver, timeout, socks5.clone()))
         .collect::<Result<Vec<_>>>()?;
     Ok(ResolverPolicy::Bootstrap {
-        resolver: Arc::new(NameResolver::from_nameserver_configs(
+        resolver: Arc::new(NameResolver::from_nameserver_configs_with_metrics(
             nameservers,
             config.ip_version,
+            metrics,
         )?),
         timeout,
     })
@@ -298,6 +301,40 @@ pub(crate) fn clear_global() {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(OutboundRuntime::default());
 }
 
+#[cfg(test)]
+pub(crate) fn test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(test)]
+pub(crate) struct TestGlobalGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    previous: Arc<OutboundRuntime>,
+}
+
+#[cfg(test)]
+impl TestGlobalGuard {
+    pub(crate) fn clean() -> Self {
+        let lock = test_lock()
+            .lock()
+            .expect("outbound test lock should not be poisoned");
+        let previous = global();
+        clear_global();
+        Self {
+            _lock: lock,
+            previous,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestGlobalGuard {
+    fn drop(&mut self) {
+        restore_global(self.previous.clone());
+    }
+}
+
 pub(crate) fn global() -> Arc<OutboundRuntime> {
     global_slot()
         .lock()
@@ -348,6 +385,43 @@ mod tests {
             .resolve_policy(Some("oversea"), None)
             .expect("profile should resolve");
         assert!(policy.proxy().is_some());
+        let (resolver, _) = policy
+            .resolver()
+            .expect("profile resolver should be configured");
+        assert_eq!(resolver.profile(), "oversea");
+    }
+
+    #[test]
+    fn test_resolve_policy_default_keeps_profile_metric_label() {
+        let config = NetworkOutboundConfig {
+            default: Some("oversea".to_string()),
+            profiles: HashMap::from([(
+                "oversea".to_string(),
+                OutboundProfileConfig {
+                    resolver: Some(OutboundResolverConfig::Nameservers(
+                        OutboundResolverDetailedConfig {
+                            nameservers: vec![OutboundNameserverConfig {
+                                addr: "1.1.1.1:53".to_string(),
+                                dial_addr: None,
+                            }],
+                            ip_version: Some(4),
+                            timeout: None,
+                            proxy: None,
+                        },
+                    )),
+                    proxy: None,
+                },
+            )]),
+        };
+        let runtime = OutboundRuntime::from_config(&config).expect("outbound config should parse");
+        let policy = runtime
+            .resolve_policy(None, None)
+            .expect("default profile should resolve");
+
+        let (resolver, _) = policy
+            .resolver()
+            .expect("default profile resolver should be configured");
+        assert_eq!(resolver.profile(), "oversea");
     }
 
     #[test]

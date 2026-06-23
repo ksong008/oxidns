@@ -311,7 +311,7 @@ export const zhCNPluginDefined = {
           label: "出站配置",
           description:
             "引用 network.outbound.profiles 中的出站配置，为该上游注入 resolver 和 proxy；本地 dial_addr、bootstrap、socks5 优先生效。",
-          placeholder: "oversea",
+          placeholder: "profile-1",
         },
         "upstreams[].dial_addr": {
           label: "拨号 IP",
@@ -1185,7 +1185,7 @@ export const zhCNPluginDefined = {
           label: "出站配置",
           description:
             "引用 network.outbound.profiles 中的出站配置，用于统一控制解析器和代理。",
-          placeholder: "oversea",
+          placeholder: "profile-1",
         },
         socks5: {
           label: "SOCKS5 代理",
@@ -1591,7 +1591,7 @@ export const zhCNPluginDefined = {
           label: "出站配置",
           description:
             "引用 network.outbound.profiles 中的出站配置，用于升级下载。",
-          placeholder: "oversea",
+          placeholder: "profile-1",
         },
         socks5: {
           label: "SOCKS5 代理",
@@ -1644,7 +1644,7 @@ export const zhCNPluginDefined = {
           label: "出站配置",
           description:
             "引用 network.outbound.profiles 中的出站配置，用于统一控制下载解析器和代理。",
-          placeholder: "oversea",
+          placeholder: "profile-1",
         },
         socks5: {
           label: "SOCKS5 代理",

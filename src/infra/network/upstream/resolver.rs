@@ -11,8 +11,10 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
+use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
-use crate::infra::network::resolver::NameResolver;
+use crate::infra::network::metrics::{self as network_metrics, NetworkProtocol, PoolRefreshReason};
+use crate::infra::network::resolver::{NameResolver, ResolvedIp};
 use crate::infra::network::upstream::builder::{
     main_pool_min_conns, pipeline_request_map_capacity, reuse_request_map_capacity,
 };
@@ -224,8 +226,8 @@ impl BootstrapUdpTruncatedUpstream {
         fallback_info.connection_type = ConnectionType::TCP;
         Self {
             connection_info: connection_info.clone(),
-            main: BootstrapUpstream::new(connection_info),
-            fallback: BootstrapUpstream::new(fallback_info),
+            main: BootstrapUpstream::udp(connection_info),
+            fallback: BootstrapUpstream::tcp(fallback_info),
         }
     }
 }
@@ -251,137 +253,151 @@ impl Upstream for BootstrapUdpTruncatedUpstream {
     }
 }
 
-#[derive(Debug)]
-pub struct ConnectionBuilderFactory {
-    connection_info: ConnectionInfo,
+trait BootstrapPoolFactory<C: Connection>: Debug + Send + Sync {
+    fn create_pool(
+        &self,
+        connection_info: &ConnectionInfo,
+        ip: IpAddr,
+    ) -> Arc<dyn ConnectionPool<C>>;
 }
 
-impl ConnectionBuilderFactory {
-    pub(crate) fn new(connection_info: ConnectionInfo) -> Self {
-        ConnectionBuilderFactory { connection_info }
-    }
+#[derive(Debug)]
+struct UdpBootstrapPoolFactory;
 
-    /// Build a ConnectionBuilder with the resolved IP address.
-    ///
-    /// # Safety
-    ///
-    /// This method uses `unsafe transmute` to convert concrete
-    /// ConnectionBuilder types to the generic type `C`. This is SAFE
-    /// because:
-    ///
-    /// 1. The generic parameter `C` in `DomainUpstream<C>` is determined at
-    ///    creation time based on `connection_info.connection_type`
-    /// 2. `connection_info.connection_type` is immutable and never changes at
-    ///    runtime
-    /// 3. The match ensures we always transmute the correct concrete type to
-    ///    `C`:
-    ///    - `ConnectionType::UDP` is always used with
-    ///      `DomainUpstream<UdpConnection>`
-    ///    - `ConnectionType::TCP` is always used with
-    ///      `DomainUpstream<TcpConnection>`
-    ///    - etc.
-    ///
-    /// The type invariant is established in
-    /// `UpstreamBuilder::with_upstream_config()` where `DomainUpstream<C>`
-    /// is created with the matching `C` for each ConnectionType.
-    pub fn build<C: Connection>(
+impl BootstrapPoolFactory<UdpConnection> for UdpBootstrapPoolFactory {
+    fn create_pool(
         &self,
+        connection_info: &ConnectionInfo,
         ip: IpAddr,
-        request_map_capacity: u16,
-    ) -> Box<dyn ConnectionBuilder<C>> {
-        let mut info = self.connection_info.clone();
-        info.remote_ip = Some(ip);
-        match info.connection_type {
-            ConnectionType::UDP => {
-                let src: Box<dyn ConnectionBuilder<UdpConnection>> =
-                    Box::new(UdpConnectionBuilder::new(&info, request_map_capacity));
-                unsafe {
-                    std::mem::transmute::<
-                        Box<dyn ConnectionBuilder<UdpConnection>>,
-                        Box<dyn ConnectionBuilder<C>>,
-                    >(src)
-                }
-            }
-            ConnectionType::TCP => {
-                let src: Box<dyn ConnectionBuilder<TcpConnection>> =
-                    Box::new(TcpConnectionBuilder::new(&info, request_map_capacity));
-                unsafe {
-                    std::mem::transmute::<
-                        Box<dyn ConnectionBuilder<TcpConnection>>,
-                        Box<dyn ConnectionBuilder<C>>,
-                    >(src)
-                }
-            }
-            #[cfg(feature = "upstream-dot")]
-            ConnectionType::DoT => {
-                let src: Box<dyn ConnectionBuilder<TcpConnection>> =
-                    Box::new(TcpConnectionBuilder::new(&info, request_map_capacity));
-                unsafe {
-                    std::mem::transmute::<
-                        Box<dyn ConnectionBuilder<TcpConnection>>,
-                        Box<dyn ConnectionBuilder<C>>,
-                    >(src)
-                }
-            }
-            #[cfg(not(feature = "upstream-dot"))]
-            ConnectionType::DoT => {
-                unreachable!("upstream DoT branch reached but feature `upstream-dot` is disabled")
-            }
-            #[cfg(feature = "upstream-doq")]
-            ConnectionType::DoQ => {
-                let src: Box<dyn ConnectionBuilder<QuicConnection>> =
-                    Box::new(QuicConnectionBuilder::new(&info));
-                unsafe {
-                    std::mem::transmute::<
-                        Box<dyn ConnectionBuilder<QuicConnection>>,
-                        Box<dyn ConnectionBuilder<C>>,
-                    >(src)
-                }
-            }
-            #[cfg(not(feature = "upstream-doq"))]
-            ConnectionType::DoQ => {
-                // Unreachable: with_connection_info refuses DoQ when the feature
-                // is off, so a BootstrapUpstream that would call back into this
-                // builder is never constructed.
-                unreachable!("upstream DoQ branch reached but feature `upstream-doq` is disabled")
-            }
-            #[cfg(feature = "upstream-doh")]
-            ConnectionType::DoH => {
-                if info.enable_http3 {
-                    #[cfg(feature = "upstream-doh3")]
-                    {
-                        let src: Box<dyn ConnectionBuilder<H3Connection>> =
-                            Box::new(H3ConnectionBuilder::new(&info));
-                        unsafe {
-                            std::mem::transmute::<
-                                Box<dyn ConnectionBuilder<H3Connection>>,
-                                Box<dyn ConnectionBuilder<C>>,
-                            >(src)
-                        }
-                    }
-                    #[cfg(not(feature = "upstream-doh3"))]
-                    {
-                        unreachable!(
-                            "upstream DoH3 branch reached but feature `upstream-doh3` is disabled"
-                        )
-                    }
-                } else {
-                    let src: Box<dyn ConnectionBuilder<H2Connection>> =
-                        Box::new(H2ConnectionBuilder::new(&info));
-                    unsafe {
-                        std::mem::transmute::<
-                            Box<dyn ConnectionBuilder<H2Connection>>,
-                            Box<dyn ConnectionBuilder<C>>,
-                        >(src)
-                    }
-                }
-            }
-            #[cfg(not(feature = "upstream-doh"))]
-            ConnectionType::DoH => {
-                unreachable!("upstream DoH branch reached but feature `upstream-doh` is disabled")
-            }
+    ) -> Arc<dyn ConnectionPool<UdpConnection>> {
+        let info = connection_info_with_ip(connection_info, ip);
+        let builder = UdpConnectionBuilder::new(&info, pipeline_request_map_capacity());
+        PipelinePool::new(
+            main_pool_min_conns(&info),
+            info.max_conns_or_default(),
+            ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
+            info.idle_timeout,
+            Box::new(builder),
+            QueryTimeoutPolicy::Reuse,
+            info.timeout,
+        )
+    }
+}
+
+#[derive(Debug)]
+struct TcpBootstrapPoolFactory;
+
+impl BootstrapPoolFactory<TcpConnection> for TcpBootstrapPoolFactory {
+    fn create_pool(
+        &self,
+        connection_info: &ConnectionInfo,
+        ip: IpAddr,
+    ) -> Arc<dyn ConnectionPool<TcpConnection>> {
+        let info = connection_info_with_ip(connection_info, ip);
+        if info.enable_pipeline.unwrap_or(false) {
+            let builder = TcpConnectionBuilder::new(&info, pipeline_request_map_capacity());
+            PipelinePool::new(
+                main_pool_min_conns(&info),
+                info.max_conns_or_default(),
+                ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
+                info.idle_timeout,
+                Box::new(builder),
+                QueryTimeoutPolicy::Retire,
+                info.timeout,
+            )
+        } else {
+            let builder = TcpConnectionBuilder::new(&info, reuse_request_map_capacity());
+            ReusePool::new(
+                main_pool_min_conns(&info),
+                info.max_conns_or_default(),
+                info.idle_timeout,
+                Box::new(builder),
+                QueryTimeoutPolicy::Close,
+                info.timeout,
+            )
         }
     }
+}
+
+#[cfg(feature = "upstream-doq")]
+#[derive(Debug)]
+struct QuicBootstrapPoolFactory;
+
+#[cfg(feature = "upstream-doq")]
+impl BootstrapPoolFactory<QuicConnection> for QuicBootstrapPoolFactory {
+    fn create_pool(
+        &self,
+        connection_info: &ConnectionInfo,
+        ip: IpAddr,
+    ) -> Arc<dyn ConnectionPool<QuicConnection>> {
+        let info = connection_info_with_ip(connection_info, ip);
+        let builder = QuicConnectionBuilder::new(&info);
+        PipelinePool::new(
+            main_pool_min_conns(&info),
+            info.max_conns_or_default(),
+            ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
+            info.idle_timeout,
+            Box::new(builder),
+            QueryTimeoutPolicy::Retire,
+            info.timeout,
+        )
+    }
+}
+
+#[cfg(feature = "upstream-doh")]
+#[derive(Debug)]
+struct H2BootstrapPoolFactory;
+
+#[cfg(feature = "upstream-doh")]
+impl BootstrapPoolFactory<H2Connection> for H2BootstrapPoolFactory {
+    fn create_pool(
+        &self,
+        connection_info: &ConnectionInfo,
+        ip: IpAddr,
+    ) -> Arc<dyn ConnectionPool<H2Connection>> {
+        let info = connection_info_with_ip(connection_info, ip);
+        let builder = H2ConnectionBuilder::new(&info);
+        PipelinePool::new(
+            main_pool_min_conns(&info),
+            info.max_conns_or_default(),
+            ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
+            info.idle_timeout,
+            Box::new(builder),
+            QueryTimeoutPolicy::Retire,
+            info.timeout,
+        )
+    }
+}
+
+#[cfg(feature = "upstream-doh3")]
+#[derive(Debug)]
+struct H3BootstrapPoolFactory;
+
+#[cfg(feature = "upstream-doh3")]
+impl BootstrapPoolFactory<H3Connection> for H3BootstrapPoolFactory {
+    fn create_pool(
+        &self,
+        connection_info: &ConnectionInfo,
+        ip: IpAddr,
+    ) -> Arc<dyn ConnectionPool<H3Connection>> {
+        let info = connection_info_with_ip(connection_info, ip);
+        let builder = H3ConnectionBuilder::new(&info);
+        PipelinePool::new(
+            main_pool_min_conns(&info),
+            info.max_conns_or_default(),
+            ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
+            info.idle_timeout,
+            Box::new(builder),
+            QueryTimeoutPolicy::Retire,
+            info.timeout,
+        )
+    }
+}
+
+fn connection_info_with_ip(connection_info: &ConnectionInfo, ip: IpAddr) -> ConnectionInfo {
+    let mut info = connection_info.clone();
+    info.remote_ip = Some(ip);
+    info
 }
 
 /// Domain-based upstream resolver that uses bootstrap to resolve domain names
@@ -409,19 +425,50 @@ pub(crate) struct BootstrapUpstream<C: Connection> {
     connection_info: ConnectionInfo,
     /// Bootstrap resolver for domain name resolution
     bootstrap: Arc<NameResolver>,
-    /// Lock-free connection pool with current resolved IP
-    /// Tuple: (current_ip, connection_pool)
-    pool: ArcSwap<(Option<IpAddr>, Arc<dyn ConnectionPool<C>>)>,
-    /// Factory for creating connection builders when IP changes
-    builder_factory: ConnectionBuilderFactory,
+    /// Lock-free connection pool with current resolved IP and TTL deadline.
+    pool: ArcSwap<BootstrapPoolState<C>>,
+    /// Type-safe factory for creating protocol-specific pools when IP changes.
+    pool_factory: Box<dyn BootstrapPoolFactory<C>>,
     /// Serializes cold-path pool creation after bootstrap refreshes.
     pool_update_lock: Mutex<()>,
+}
+
+#[derive(Debug)]
+struct BootstrapPoolState<C: Connection> {
+    ip: Option<IpAddr>,
+    expires_at_ms: u64,
+    pool: Arc<dyn ConnectionPool<C>>,
+}
+
+impl<C: Connection> BootstrapPoolState<C> {
+    fn placeholder(pool: Arc<dyn ConnectionPool<C>>) -> Self {
+        Self {
+            ip: None,
+            expires_at_ms: 0,
+            pool,
+        }
+    }
+
+    fn with_pool(resolved: ResolvedIp, pool: Arc<dyn ConnectionPool<C>>) -> Self {
+        Self {
+            ip: Some(resolved.ip),
+            expires_at_ms: resolved.expires_at_ms,
+            pool,
+        }
+    }
+
+    fn is_valid(&self) -> bool {
+        self.ip.is_some() && AppClock::elapsed_millis() < self.expires_at_ms
+    }
 }
 
 impl<C: Connection> BootstrapUpstream<C> {
     /// Create a new domain upstream with the given connection info and optional
     /// bootstrap server
-    pub(crate) fn new(connection_info: ConnectionInfo) -> Self {
+    fn new(
+        connection_info: ConnectionInfo,
+        pool_factory: Box<dyn BootstrapPoolFactory<C>>,
+    ) -> Self {
         let pool: Arc<dyn ConnectionPool<C>> = ReusePool::<C>::new(
             0,
             1,
@@ -431,14 +478,12 @@ impl<C: Connection> BootstrapUpstream<C> {
             connection_info.timeout,
         );
 
-        let conn_info = connection_info.clone();
-        let builder_factory = ConnectionBuilderFactory::new(conn_info.clone());
         BootstrapUpstream {
             server_name: connection_info.server_name.clone(),
             bootstrap: connection_info.bootstrap.clone().unwrap(),
             connection_info,
-            pool: ArcSwap::from_pointee((None, pool)),
-            builder_factory,
+            pool: ArcSwap::from_pointee(BootstrapPoolState::placeholder(pool)),
+            pool_factory,
             pool_update_lock: Mutex::new(()),
         }
     }
@@ -456,125 +501,114 @@ impl<C: Connection> BootstrapUpstream<C> {
     /// - Pool recreation only happens on IP change (rare)
     /// - Cold-path pool recreation is serialized to avoid duplicate pool builds
     async fn init_pool_if_needed(&self, deadline: QueryDeadline) -> Result<()> {
-        // Fast path: atomically load current pool state (lock-free)
-        let guard = &(*self.pool.load());
-        let pool_ip = guard.0;
-
-        // Resolve domain name via bootstrap (cached with TTL)
-        let bootstrap_deadline =
-            bootstrap_deadline(deadline, self.connection_info.bootstrap_timeout);
-        let ip = match self
-            .bootstrap
-            .resolve(&self.server_name, bootstrap_deadline)
-            .await
-        {
-            Ok(value) => value,
-            Err(value) => return Err(value),
-        };
-
-        // Check if IP has changed since last resolution
-        if let Some(current_ip) = pool_ip
-            && current_ip == ip
-        {
-            // IP unchanged, continue using current pool (hot path)
+        let state = self.pool.load();
+        if state.is_valid() {
             return Ok(());
         }
+        drop(state);
 
         let _update_guard = match deadline.run(self.pool_update_lock.lock()).await {
             DeadlineOutcome::Completed(guard) => guard,
             DeadlineOutcome::Expired => return Err(deadline.timeout_error()),
         };
-        let guard = &(*self.pool.load());
-        let pool_ip = guard.0;
+        let state = self.pool.load();
+        if state.is_valid() {
+            return Ok(());
+        }
 
-        if let Some(current_ip) = pool_ip {
-            if current_ip == ip {
-                // Another waiter already refreshed the pool while we were
-                // waiting for the cold-path update lock.
-                return Ok(());
-            }
+        let refresh_started_at_ms = AppClock::elapsed_millis();
+        let bootstrap_deadline =
+            bootstrap_deadline(deadline, self.connection_info.bootstrap_timeout);
+        let resolved = match self
+            .bootstrap
+            .resolve_with_expiry(&self.server_name, bootstrap_deadline)
+            .await
+        {
+            Ok(value) => value,
+            Err(value) => return Err(value),
+        };
+        let protocol = NetworkProtocol::from_connection_info(&self.connection_info);
 
-            // IP changed - log the change (rare event, acceptable overhead)
+        if let Some(current_ip) = state.ip
+            && current_ip == resolved.ip
+        {
+            let next_state = BootstrapPoolState::with_pool(resolved, state.pool.clone());
+            self.pool.swap(Arc::new(next_state));
+            network_metrics::upstream_pool_refresh(
+                self.bootstrap.metrics(),
+                protocol,
+                PoolRefreshReason::TtlOnly,
+                refresh_started_at_ms,
+            );
+            return Ok(());
+        }
+
+        let refresh_reason = if let Some(current_ip) = state.ip {
             info!(
                 server = %self.server_name,
                 old_ip = %current_ip,
-                new_ip = %ip,
+                new_ip = %resolved.ip,
                 "Upstream IP address changed, refreshing connection pool"
             );
+            PoolRefreshReason::IpChanged
         } else {
-            // First initialization
             info!(
                 server = %self.server_name,
-                ip = %ip,
+                ip = %resolved.ip,
                 "Initializing connection pool for domain-based upstream"
             );
-        }
-
-        // Create new connection builder with the resolved IP
-        let request_map_capacity = match self.connection_info.connection_type {
-            ConnectionType::UDP => pipeline_request_map_capacity(),
-            ConnectionType::TCP | ConnectionType::DoT => {
-                if self.connection_info.enable_pipeline.unwrap_or(false) {
-                    pipeline_request_map_capacity()
-                } else {
-                    reuse_request_map_capacity()
-                }
-            }
-            ConnectionType::DoQ | ConnectionType::DoH => reuse_request_map_capacity(),
+            PoolRefreshReason::Init
         };
 
-        let builder: Box<dyn ConnectionBuilder<C>> =
-            self.builder_factory.build(ip, request_map_capacity);
-
-        // Create appropriate pool type based on protocol
-        let new_pool: Arc<dyn ConnectionPool<C>> = match self.connection_info.connection_type {
-            ConnectionType::UDP => PipelinePool::new(
-                main_pool_min_conns(&self.connection_info),
-                self.connection_info.max_conns_or_default(),
-                ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
-                self.connection_info.idle_timeout,
-                builder,
-                QueryTimeoutPolicy::Reuse,
-                self.connection_info.timeout,
-            ),
-            ConnectionType::TCP | ConnectionType::DoT => {
-                if self.connection_info.enable_pipeline.unwrap_or(false) {
-                    PipelinePool::new(
-                        main_pool_min_conns(&self.connection_info),
-                        self.connection_info.max_conns_or_default(),
-                        ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
-                        self.connection_info.idle_timeout,
-                        builder,
-                        QueryTimeoutPolicy::Retire,
-                        self.connection_info.timeout,
-                    )
-                } else {
-                    ReusePool::new(
-                        main_pool_min_conns(&self.connection_info),
-                        self.connection_info.max_conns_or_default(),
-                        self.connection_info.idle_timeout,
-                        builder,
-                        QueryTimeoutPolicy::Close,
-                        self.connection_info.timeout,
-                    )
-                }
-            }
-            ConnectionType::DoQ | ConnectionType::DoH => PipelinePool::new(
-                main_pool_min_conns(&self.connection_info),
-                self.connection_info.max_conns_or_default(),
-                ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
-                self.connection_info.idle_timeout,
-                builder,
-                QueryTimeoutPolicy::Retire,
-                self.connection_info.timeout,
-            ),
-        };
+        let new_pool = self
+            .pool_factory
+            .create_pool(&self.connection_info, resolved.ip);
 
         // Atomically swap to new pool (lock-free, readers see old or new pool
         // consistently)
-        self.pool.swap(Arc::from((Some(ip), new_pool)));
+        self.pool
+            .swap(Arc::new(BootstrapPoolState::with_pool(resolved, new_pool)));
+        network_metrics::upstream_pool_refresh(
+            self.bootstrap.metrics(),
+            protocol,
+            refresh_reason,
+            refresh_started_at_ms,
+        );
 
         Ok(())
+    }
+}
+
+impl BootstrapUpstream<UdpConnection> {
+    pub(crate) fn udp(connection_info: ConnectionInfo) -> Self {
+        Self::new(connection_info, Box::new(UdpBootstrapPoolFactory))
+    }
+}
+
+impl BootstrapUpstream<TcpConnection> {
+    pub(crate) fn tcp(connection_info: ConnectionInfo) -> Self {
+        Self::new(connection_info, Box::new(TcpBootstrapPoolFactory))
+    }
+}
+
+#[cfg(feature = "upstream-doq")]
+impl BootstrapUpstream<QuicConnection> {
+    pub(crate) fn doq(connection_info: ConnectionInfo) -> Self {
+        Self::new(connection_info, Box::new(QuicBootstrapPoolFactory))
+    }
+}
+
+#[cfg(feature = "upstream-doh")]
+impl BootstrapUpstream<H2Connection> {
+    pub(crate) fn doh2(connection_info: ConnectionInfo) -> Self {
+        Self::new(connection_info, Box::new(H2BootstrapPoolFactory))
+    }
+}
+
+#[cfg(feature = "upstream-doh3")]
+impl BootstrapUpstream<H3Connection> {
+    pub(crate) fn doh3(connection_info: ConnectionInfo) -> Self {
+        Self::new(connection_info, Box::new(H3BootstrapPoolFactory))
     }
 }
 
@@ -610,10 +644,10 @@ impl<C: Connection> Upstream for BootstrapUpstream<C> {
         self.init_pool_if_needed(deadline).await?;
 
         // Get current connection pool (lock-free atomic load)
-        let pool = &*self.pool.load();
+        let pool = self.pool.load();
 
         // Forward query through the pool
-        pool.1.query(request, deadline).await
+        pool.pool.query(request, deadline).await
     }
 
     fn connection_info(&self) -> &ConnectionInfo {
@@ -638,5 +672,258 @@ impl<C: Connection> ConnectionBuilder<C> for DummyConnectionBuilder {
         Err(DnsError::protocol(
             "DummyConnectionBuilder cannot create connections (pool not yet initialized)",
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use tokio::net::UdpSocket;
+
+    use super::*;
+    use crate::infra::clock::AppClock;
+    use crate::infra::network::metrics::{self as network_metrics, OUTBOUND_PROFILE_LOCAL};
+    use crate::infra::network::outbound;
+    use crate::infra::network::upstream::UpstreamConfig;
+    use crate::proto::rdata::A;
+    use crate::proto::{MessageType, RData, Rcode, Record};
+
+    async fn spawn_bootstrap_server(answers: Vec<(Ipv4Addr, u32)>) -> (String, Arc<AtomicUsize>) {
+        let socket = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bootstrap socket should bind");
+        let addr = socket
+            .local_addr()
+            .expect("bootstrap socket should have addr");
+        let answers = Arc::new(Mutex::new(VecDeque::from(answers)));
+        let count = Arc::new(AtomicUsize::new(0));
+        let server_count = count.clone();
+
+        tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            loop {
+                let Ok((len, peer)) = socket.recv_from(&mut buf).await else {
+                    break;
+                };
+                let Ok(request) = Message::from_bytes(&buf[..len]) else {
+                    continue;
+                };
+                let Some(question) = request.first_question().cloned() else {
+                    continue;
+                };
+                let answer = answers
+                    .lock()
+                    .expect("answers lock should not be poisoned")
+                    .pop_front()
+                    .unwrap_or((Ipv4Addr::new(203, 0, 113, 53), 60));
+                server_count.fetch_add(1, Ordering::Relaxed);
+
+                let mut response = Message::new();
+                response.set_id(request.id());
+                response.set_message_type(MessageType::Response);
+                response.set_recursion_desired(request.recursion_desired());
+                response.set_recursion_available(true);
+                response.set_rcode(Rcode::NoError);
+                response.add_question(question.clone());
+                response.add_answer(Record::from_rdata(
+                    question.name().clone(),
+                    answer.1,
+                    RData::A(A(answer.0)),
+                ));
+                let wire = response
+                    .to_bytes()
+                    .expect("bootstrap response should encode");
+                let _ = socket.send_to(&wire, peer).await;
+            }
+        });
+
+        (addr.to_string(), count)
+    }
+
+    fn bootstrap_connection_info(bootstrap: String) -> ConnectionInfo {
+        let config = UpstreamConfig {
+            tag: None,
+            addr: "udp://dns.example.invalid:53".to_string(),
+            outbound: None,
+            dial_addr: None,
+            port: None,
+            bootstrap: Some(bootstrap),
+            bootstrap_version: Some(4),
+            socks5: None,
+            idle_timeout: None,
+            max_conns: None,
+            min_conns: None,
+            insecure_skip_verify: None,
+            timeout: None,
+            enable_pipeline: None,
+            enable_http3: None,
+            so_mark: None,
+            bind_to_device: None,
+        };
+        let _outbound_guard = outbound::TestGlobalGuard::clean();
+        ConnectionInfo::try_from(config).expect("bootstrap upstream config should parse")
+    }
+
+    fn force_pool_expired(upstream: &BootstrapUpstream<UdpConnection>) {
+        let state = upstream.pool.load();
+        upstream.pool.swap(Arc::new(BootstrapPoolState {
+            ip: state.ip,
+            expires_at_ms: 0,
+            pool: state.pool.clone(),
+        }));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_udp_truncated_upstream_constructs_typed_main_and_fallback() {
+        AppClock::start();
+        let upstream =
+            BootstrapUdpTruncatedUpstream::new(bootstrap_connection_info("127.0.0.1:53".into()));
+
+        assert_eq!(
+            upstream.main.connection_info.connection_type,
+            ConnectionType::UDP
+        );
+        assert_eq!(
+            upstream.fallback.connection_info.connection_type,
+            ConnectionType::TCP
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_upstream_pool_refresh_metrics_record_reasons() {
+        AppClock::start();
+        let before = network_metrics::snapshot_for_profile_for_tests(OUTBOUND_PROFILE_LOCAL);
+        let (bootstrap, _count) = spawn_bootstrap_server(vec![
+            (Ipv4Addr::new(203, 0, 113, 1), 60),
+            (Ipv4Addr::new(203, 0, 113, 1), 60),
+            (Ipv4Addr::new(203, 0, 113, 2), 60),
+        ])
+        .await;
+        let upstream =
+            BootstrapUpstream::<UdpConnection>::udp(bootstrap_connection_info(bootstrap));
+
+        upstream
+            .init_pool_if_needed(QueryDeadline::new(Duration::from_secs(1)))
+            .await
+            .expect("initial pool init should resolve bootstrap");
+        force_pool_expired(&upstream);
+        upstream.bootstrap.clear_entries_for_test();
+        upstream
+            .init_pool_if_needed(QueryDeadline::new(Duration::from_secs(1)))
+            .await
+            .expect("same IP refresh should update TTL");
+        force_pool_expired(&upstream);
+        upstream.bootstrap.clear_entries_for_test();
+        upstream
+            .init_pool_if_needed(QueryDeadline::new(Duration::from_secs(1)))
+            .await
+            .expect("changed IP refresh should rebuild pool");
+
+        let after = network_metrics::snapshot_for_profile_for_tests(OUTBOUND_PROFILE_LOCAL);
+        assert!(
+            after.upstream_pool_refresh_total(NetworkProtocol::Udp, PoolRefreshReason::Init)
+                > before.upstream_pool_refresh_total(NetworkProtocol::Udp, PoolRefreshReason::Init),
+            "expected init pool refresh metric to increase: before={before:?}, after={after:?}"
+        );
+        assert!(
+            after.upstream_pool_refresh_total(NetworkProtocol::Udp, PoolRefreshReason::TtlOnly)
+                > before
+                    .upstream_pool_refresh_total(NetworkProtocol::Udp, PoolRefreshReason::TtlOnly),
+            "expected ttl_only pool refresh metric to increase: before={before:?}, after={after:?}"
+        );
+        assert!(
+            after.upstream_pool_refresh_total(NetworkProtocol::Udp, PoolRefreshReason::IpChanged)
+                > before.upstream_pool_refresh_total(
+                    NetworkProtocol::Udp,
+                    PoolRefreshReason::IpChanged
+                ),
+            "expected ip_changed pool refresh metric to increase: before={before:?}, after={after:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_upstream_valid_pool_skips_resolver_cache() {
+        AppClock::start();
+        let (bootstrap, count) =
+            spawn_bootstrap_server(vec![(Ipv4Addr::new(203, 0, 113, 1), 60)]).await;
+        let upstream =
+            BootstrapUpstream::<UdpConnection>::udp(bootstrap_connection_info(bootstrap));
+
+        upstream
+            .init_pool_if_needed(QueryDeadline::new(Duration::from_secs(1)))
+            .await
+            .expect("initial pool init should resolve bootstrap");
+        upstream.bootstrap.clear_entries_for_test();
+        upstream
+            .init_pool_if_needed(QueryDeadline::new(Duration::from_secs(1)))
+            .await
+            .expect("valid pool state should not need resolver");
+
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_upstream_expired_same_ip_refreshes_ttl_without_rebuilding_pool() {
+        AppClock::start();
+        let (bootstrap, count) = spawn_bootstrap_server(vec![
+            (Ipv4Addr::new(203, 0, 113, 1), 60),
+            (Ipv4Addr::new(203, 0, 113, 1), 60),
+        ])
+        .await;
+        let upstream =
+            BootstrapUpstream::<UdpConnection>::udp(bootstrap_connection_info(bootstrap));
+
+        upstream
+            .init_pool_if_needed(QueryDeadline::new(Duration::from_secs(1)))
+            .await
+            .expect("initial pool init should resolve bootstrap");
+        let first_pool = upstream.pool.load().pool.clone();
+        force_pool_expired(&upstream);
+        upstream.bootstrap.clear_entries_for_test();
+        upstream
+            .init_pool_if_needed(QueryDeadline::new(Duration::from_secs(1)))
+            .await
+            .expect("expired pool state should refresh bootstrap");
+        let second_pool = upstream.pool.load().pool.clone();
+
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+        assert!(Arc::ptr_eq(&first_pool, &second_pool));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_upstream_expired_changed_ip_rebuilds_pool() {
+        AppClock::start();
+        let (bootstrap, count) = spawn_bootstrap_server(vec![
+            (Ipv4Addr::new(203, 0, 113, 1), 60),
+            (Ipv4Addr::new(203, 0, 113, 2), 60),
+        ])
+        .await;
+        let upstream =
+            BootstrapUpstream::<UdpConnection>::udp(bootstrap_connection_info(bootstrap));
+
+        upstream
+            .init_pool_if_needed(QueryDeadline::new(Duration::from_secs(1)))
+            .await
+            .expect("initial pool init should resolve bootstrap");
+        let first_pool = upstream.pool.load().pool.clone();
+        force_pool_expired(&upstream);
+        upstream.bootstrap.clear_entries_for_test();
+        upstream
+            .init_pool_if_needed(QueryDeadline::new(Duration::from_secs(1)))
+            .await
+            .expect("changed IP should rebuild bootstrap pool");
+        let second_pool = upstream.pool.load().pool.clone();
+
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+        assert!(!Arc::ptr_eq(&first_pool, &second_pool));
+        assert_eq!(
+            upstream.pool.load().ip,
+            Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2)))
+        );
     }
 }

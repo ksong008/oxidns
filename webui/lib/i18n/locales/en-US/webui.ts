@@ -821,10 +821,10 @@ export const enUSWebui = {
     workerThreadsPlaceholder: "Leave empty for system default",
     outboundCard: "Outbound Network",
     outboundCardDesc:
-      "Configure network.outbound profiles shared by HTTP clients, upgrades, downloads, and opt-in upstreams.",
+      "Configure network.outbound profiles shared by HTTP clients, upgrades, downloads, and upstreams.",
     defaultOutboundProfile: "Default Outbound Profile",
     defaultOutboundProfileDesc:
-      "Clients without an explicit outbound selection use this profile. Leave empty for direct connections with the system resolver.",
+      "HTTP clients and upstreams without an explicit outbound selection use this profile. Leave empty for direct connections with the system resolver.",
     addOutboundProfile: "Add Outbound Profile",
     noOutboundProfiles: "No outbound profiles configured yet",
     outboundProfileTitle: "Profile {index}",
@@ -848,6 +848,20 @@ export const enUSWebui = {
     noNameservers: "Add at least one nameserver to write a custom resolver.",
     dialAddrPlaceholder: "dial_addr, optional",
     removeNameserver: "Remove nameserver",
+    outboundMetricsTitle: "Runtime Metrics",
+    outboundMetricsDesc:
+      "Grouped by outbound_profile for resolver cache, refresh errors, and upstream pool refreshes.",
+    outboundMetricsEmpty: "No outbound runtime metrics yet.",
+    outboundMetricsConfigured: "Configured",
+    outboundMetricsCacheHit: "Cache Hit",
+    outboundMetricsRefreshAvg: "Resolver Refresh Avg",
+    outboundMetricsErrors: "Resolver Errors",
+    outboundMetricsPoolRefresh: "Pool Refreshes",
+    outboundMetricsPoolAvg: "Pool Refresh Avg",
+    outboundMetricsReasons: "Reasons",
+    outboundMetricsProtocols: "Protocols",
+    outboundMetricsSystemProfile: "System resolver / direct",
+    outboundMetricsLocalProfile: "Local bootstrap",
     mgmtApiCard: "Management API",
     mgmtApiDesc: "HTTP management interface configuration (api.http)",
     listenSection: "Listen Address (listen)",
@@ -924,7 +938,7 @@ export const enUSWebui = {
     outboundProfile: "Outbound Profile",
     outboundProfileDesc:
       "Reference a profile from network.outbound.profiles. Leave empty to use the default outbound settings.",
-    outboundProfilePlaceholder: "oversea",
+    outboundProfilePlaceholder: "profile-1",
     socks5Proxy: "SOCKS5 Proxy",
     socks5ProxyDesc:
       "SOCKS5 proxy used for downloads. Do not include a protocol prefix; username and password are supported.",

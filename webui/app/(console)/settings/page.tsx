@@ -49,6 +49,7 @@ import {
 } from "lucide-react";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
+import type { MetricSeries, OutboundMetricsMap } from "@/lib/metrics";
 
 type OutboundResolverMode = "system" | "nameservers";
 type OutboundResolverIpVersion = "4" | "6";
@@ -70,6 +71,260 @@ interface OutboundProfileForm {
   resolverProxy: OutboundResolverProxyMode;
   socks5: string;
   nameservers: OutboundNameserverForm[];
+}
+
+interface OutboundProfileMetricsSummary {
+  cacheHitRate?: number;
+  refreshAvgMs?: number;
+  resolverErrors: number;
+  poolRefreshTotal: number;
+  poolRefreshAvgMs?: number;
+  initRefreshes: number;
+  ipChangedRefreshes: number;
+  ttlOnlyRefreshes: number;
+  protocols: string[];
+}
+
+function sumMetric(
+  series: MetricSeries[] | undefined,
+  name: string,
+  predicate: (item: MetricSeries) => boolean = () => true,
+): number {
+  if (!series) return 0;
+  return series.reduce(
+    (total, item) =>
+      item.name === name && predicate(item) ? total + item.value : total,
+    0,
+  );
+}
+
+function summarizeOutboundMetrics(
+  series: MetricSeries[] | undefined,
+): OutboundProfileMetricsSummary | null {
+  if (!series || series.length === 0) return null;
+  const hits = sumMetric(series, "network_resolver_cache_hit_total");
+  const misses = sumMetric(series, "network_resolver_cache_miss_total");
+  const refreshes = sumMetric(series, "network_resolver_refresh_total");
+  const refreshLatency = sumMetric(
+    series,
+    "network_resolver_refresh_latency_ms_total",
+  );
+  const poolRefreshTotal = sumMetric(
+    series,
+    "network_upstream_pool_refresh_total",
+  );
+  const poolRefreshLatency = sumMetric(
+    series,
+    "network_upstream_pool_refresh_latency_ms_total",
+  );
+  const protocols = Array.from(
+    new Set(
+      series
+        .filter(
+          (item) =>
+            item.name === "network_upstream_pool_refresh_total" &&
+            item.value > 0 &&
+            item.labels.protocol,
+        )
+        .map((item) => item.labels.protocol),
+    ),
+  ).sort();
+
+  return {
+    cacheHitRate:
+      hits + misses > 0 ? Math.min(hits / (hits + misses), 1) : undefined,
+    refreshAvgMs: refreshes > 0 ? refreshLatency / refreshes : undefined,
+    resolverErrors: sumMetric(series, "network_resolver_error_total"),
+    poolRefreshTotal,
+    poolRefreshAvgMs:
+      poolRefreshTotal > 0 ? poolRefreshLatency / poolRefreshTotal : undefined,
+    initRefreshes: sumMetric(
+      series,
+      "network_upstream_pool_refresh_total",
+      (item) => item.labels.reason === "init",
+    ),
+    ipChangedRefreshes: sumMetric(
+      series,
+      "network_upstream_pool_refresh_total",
+      (item) => item.labels.reason === "ip_changed",
+    ),
+    ttlOnlyRefreshes: sumMetric(
+      series,
+      "network_upstream_pool_refresh_total",
+      (item) => item.labels.reason === "ttl_only",
+    ),
+    protocols,
+  };
+}
+
+function formatMetricCount(
+  value: number,
+  formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string,
+) {
+  return formatNumber(value, { maximumFractionDigits: 0 });
+}
+
+function formatMetricPercent(
+  value: number | undefined,
+  formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string,
+) {
+  if (value === undefined) return "-";
+  return `${formatNumber(value * 100, { maximumFractionDigits: 1 })}%`;
+}
+
+function formatMetricMs(
+  value: number | undefined,
+  formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string,
+) {
+  if (value === undefined) return "-";
+  return `${formatNumber(value, { maximumFractionDigits: 1 })} ms`;
+}
+
+function displayOutboundProfileName(
+  profile: string,
+  t: (key: string) => string,
+) {
+  if (profile === "__system") {
+    return t(WEBUI.settings.outboundMetricsSystemProfile);
+  }
+  if (profile === "__local") {
+    return t(WEBUI.settings.outboundMetricsLocalProfile);
+  }
+  return profile;
+}
+
+function OutboundMetricTile({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="rounded-md border bg-background/60 px-3 py-2">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 font-mono text-sm font-medium">{value}</div>
+    </div>
+  );
+}
+
+function OutboundRuntimeMetricsPanel({
+  metrics,
+  configuredProfileNames,
+}: {
+  metrics: OutboundMetricsMap;
+  configuredProfileNames: string[];
+}) {
+  const { t, formatNumber } = useI18n();
+  const configured = new Set(configuredProfileNames);
+  const rows = Object.entries(metrics)
+    .map(([profile, series]) => ({
+      profile,
+      summary: summarizeOutboundMetrics(series),
+    }))
+    .filter(
+      (
+        row,
+      ): row is { profile: string; summary: OutboundProfileMetricsSummary } =>
+        row.summary !== null,
+    )
+    .sort((a, b) => {
+      const aConfigured = configuredProfileNames.indexOf(a.profile);
+      const bConfigured = configuredProfileNames.indexOf(b.profile);
+      if (aConfigured !== -1 || bConfigured !== -1) {
+        return (
+          (aConfigured === -1 ? 999 : aConfigured) -
+          (bConfigured === -1 ? 999 : bConfigured)
+        );
+      }
+      return a.profile.localeCompare(b.profile);
+    });
+
+  return (
+    <div className="space-y-3 border-t pt-4">
+      <div>
+        <p className="text-sm font-medium">
+          {t(WEBUI.settings.outboundMetricsTitle)}
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {t(WEBUI.settings.outboundMetricsDesc)}
+        </p>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+          {t(WEBUI.settings.outboundMetricsEmpty)}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {rows.map(({ profile, summary }) => (
+            <div
+              key={profile}
+              className="space-y-3 rounded-lg border bg-background/60 p-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0 font-mono text-sm font-medium">
+                  {displayOutboundProfileName(profile, t)}
+                </div>
+                {configured.has(profile) && (
+                  <Badge variant="secondary">
+                    {t(WEBUI.settings.outboundMetricsConfigured)}
+                  </Badge>
+                )}
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                <OutboundMetricTile
+                  label={t(WEBUI.settings.outboundMetricsCacheHit)}
+                  value={formatMetricPercent(
+                    summary.cacheHitRate,
+                    formatNumber,
+                  )}
+                />
+                <OutboundMetricTile
+                  label={t(WEBUI.settings.outboundMetricsRefreshAvg)}
+                  value={formatMetricMs(summary.refreshAvgMs, formatNumber)}
+                />
+                <OutboundMetricTile
+                  label={t(WEBUI.settings.outboundMetricsErrors)}
+                  value={formatMetricCount(
+                    summary.resolverErrors,
+                    formatNumber,
+                  )}
+                />
+                <OutboundMetricTile
+                  label={t(WEBUI.settings.outboundMetricsPoolRefresh)}
+                  value={formatMetricCount(
+                    summary.poolRefreshTotal,
+                    formatNumber,
+                  )}
+                />
+                <OutboundMetricTile
+                  label={t(WEBUI.settings.outboundMetricsPoolAvg)}
+                  value={formatMetricMs(summary.poolRefreshAvgMs, formatNumber)}
+                />
+              </div>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                <span>
+                  {t(WEBUI.settings.outboundMetricsReasons)}: init{" "}
+                  {formatMetricCount(summary.initRefreshes, formatNumber)} ·
+                  ip_changed{" "}
+                  {formatMetricCount(summary.ipChangedRefreshes, formatNumber)}{" "}
+                  · ttl_only{" "}
+                  {formatMetricCount(summary.ttlOnlyRefreshes, formatNumber)}
+                </span>
+                {summary.protocols.length > 0 && (
+                  <span>
+                    {t(WEBUI.settings.outboundMetricsProtocols)}:{" "}
+                    {summary.protocols.join(", ")}
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function SettingsPage() {
@@ -107,6 +362,7 @@ export default function SettingsPage() {
   const setYamlConfig = useAppStore((s) => s.setYamlConfig);
   const saveConfig = useAppStore((s) => s.saveConfig);
   const loadConfig = useAppStore((s) => s.loadConfig);
+  const outboundMetrics = useAppStore((s) => s.outboundMetrics);
   const isConfigSaving = useAppStore((s) => s.isConfigSaving);
   const isRestarting = useAppStore((s) => s.isRestarting);
   const restartApp = useAppStore((s) => s.restartApp);
@@ -1006,7 +1262,9 @@ export default function SettingsPage() {
                                     name: event.target.value,
                                   })
                                 }
-                                placeholder="oversea"
+                                placeholder={t(
+                                  WEBUI.settings.outboundProfilePlaceholder,
+                                )}
                                 className="font-mono"
                               />
                             </Field>
@@ -1205,6 +1463,13 @@ export default function SettingsPage() {
                       ))}
                     </div>
                   )}
+
+                  <OutboundRuntimeMetricsPanel
+                    metrics={outboundMetrics}
+                    configuredProfileNames={outboundProfiles
+                      .map((profile) => profile.name.trim())
+                      .filter(Boolean)}
+                  />
 
                   <div className="flex flex-wrap gap-2">
                     <Button
@@ -1959,8 +2224,10 @@ function buildNetworkOutboundConfig(
   profiles: OutboundProfileForm[],
 ): Record<string, unknown> | undefined {
   if (profiles.length === 0) return undefined;
-  const namedProfiles = profiles
-    .map((profile) => ({ ...profile, name: profile.name.trim() }));
+  const namedProfiles = profiles.map((profile) => ({
+    ...profile,
+    name: profile.name.trim(),
+  }));
   const seenProfileNames = new Set<string>();
   for (const profile of namedProfiles) {
     if (!profile.name) {
@@ -1985,7 +2252,9 @@ function buildNetworkOutboundConfig(
         profileConfig.resolver = {
           nameservers,
           ip_version: Number(profile.ipVersion),
-          ...(profile.timeout.trim() ? { timeout: profile.timeout.trim() } : {}),
+          ...(profile.timeout.trim()
+            ? { timeout: profile.timeout.trim() }
+            : {}),
           ...(profile.resolverProxy === "profile" ? { proxy: "profile" } : {}),
         };
       }
@@ -2083,7 +2352,7 @@ function createOutboundNameserverForm(): OutboundNameserverForm {
 function nextOutboundProfileName(profiles: OutboundProfileForm[]) {
   const used = new Set(profiles.map((profile) => profile.name.trim()));
   for (let index = 1; ; index += 1) {
-    const name = index === 1 ? "oversea" : `oversea${index}`;
+    const name = `profile-${index}`;
     if (!used.has(name)) return name;
   }
 }

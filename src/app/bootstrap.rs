@@ -22,6 +22,8 @@ pub async fn assemble(
     config: &Config,
     controller: Option<Arc<AppController>>,
 ) -> Result<AppAssembly> {
+    crate::infra::network::metrics::init()?;
+
     #[cfg(feature = "api")]
     let api_hub = ApiHub::from_config(&config.api)?;
     #[cfg(feature = "api")]

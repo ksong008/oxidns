@@ -10,12 +10,15 @@ use std::sync::{Arc, Mutex};
 use rand::random;
 use tracing::{debug, error, info, warn};
 
-use super::cache::ResolveEntry;
+use super::cache::{ResolveEntry, ResolvedIp};
 use super::client::{NameserverClient, build_clients};
 use super::endpoint::NameserverConfig;
 use super::query::{ResolvedAnswer, select_answer};
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::deadline::QueryDeadline;
+use crate::infra::network::metrics::{
+    self as network_metrics, NetworkProfileMetrics, OUTBOUND_PROFILE_LOCAL,
+};
 use crate::proto::{Message, Name, RecordType};
 
 const MAX_RESOLVER_ENTRIES: usize = 4096;
@@ -25,6 +28,8 @@ const MAX_RESOLVER_ENTRIES: usize = 4096;
 pub(crate) struct NameResolver {
     clients: Vec<Arc<dyn NameserverClient>>,
     ip_version: Option<u8>,
+    profile: String,
+    metrics: Arc<NetworkProfileMetrics>,
     entries: Mutex<HashMap<String, Arc<ResolveEntry>>>,
 }
 
@@ -46,31 +51,98 @@ impl NameResolver {
         nameservers: Vec<NameserverConfig>,
         ip_version: Option<u8>,
     ) -> Result<Self> {
+        Self::from_nameserver_configs_with_metrics(
+            nameservers,
+            ip_version,
+            network_metrics::profile_scope(OUTBOUND_PROFILE_LOCAL),
+        )
+    }
+
+    pub(crate) fn from_nameserver_configs_with_metrics(
+        nameservers: Vec<NameserverConfig>,
+        ip_version: Option<u8>,
+        metrics: Arc<NetworkProfileMetrics>,
+    ) -> Result<Self> {
         if nameservers.is_empty() {
             return Err(DnsError::config(
                 "name resolver requires at least one server",
             ));
         }
-        Ok(Self::from_clients(build_clients(nameservers)?, ip_version))
+        Ok(Self::from_clients_with_metrics(
+            build_clients(nameservers)?,
+            ip_version,
+            metrics,
+        ))
     }
 
+    #[cfg(test)]
     fn from_clients(clients: Vec<Arc<dyn NameserverClient>>, ip_version: Option<u8>) -> Self {
+        Self::from_clients_with_metrics(
+            clients,
+            ip_version,
+            network_metrics::profile_scope(OUTBOUND_PROFILE_LOCAL),
+        )
+    }
+
+    fn from_clients_with_metrics(
+        clients: Vec<Arc<dyn NameserverClient>>,
+        ip_version: Option<u8>,
+        metrics: Arc<NetworkProfileMetrics>,
+    ) -> Self {
         Self {
             clients,
             ip_version,
+            profile: metrics.outbound_profile().to_string(),
+            metrics,
             entries: Mutex::new(HashMap::new()),
         }
     }
 
     #[inline]
     pub(crate) async fn resolve(&self, host: &str, deadline: QueryDeadline) -> Result<IpAddr> {
+        self.resolve_with_expiry(host, deadline)
+            .await
+            .map(|resolved| resolved.ip)
+    }
+
+    #[inline]
+    pub(crate) async fn resolve_with_expiry(
+        &self,
+        host: &str,
+        deadline: QueryDeadline,
+    ) -> Result<ResolvedIp> {
         let domain = resolver_domain(host);
-        let entry = self.entry_for(domain)?;
+        let entry = match self.entry_for(domain) {
+            Ok(entry) => entry,
+            Err(err) => {
+                network_metrics::resolver_error(self.metrics());
+                return Err(err);
+            }
+        };
         entry
             .resolve_with(deadline, |request, query_name, deadline| {
                 self.query_nameservers(request, query_name, deadline)
             })
             .await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_entries_for_test(&self) {
+        self.entries
+            .lock()
+            .expect("resolver entries lock should not be poisoned")
+            .clear();
+    }
+
+    #[inline]
+    pub(crate) fn profile(&self) -> &str {
+        self.profile.as_str()
+    }
+
+    #[inline]
+    pub(crate) fn metrics(&self) -> &NetworkProfileMetrics {
+        debug_assert_eq!(self.profile(), self.metrics.outbound_profile());
+        self.metrics.as_ref()
     }
 
     fn entry_for(&self, domain: String) -> Result<Arc<ResolveEntry>> {
@@ -88,7 +160,11 @@ impl NameResolver {
                 "resolver cache entry limit exceeded ({MAX_RESOLVER_ENTRIES})"
             )));
         }
-        let entry = Arc::new(ResolveEntry::new(domain.clone(), self.ip_version)?);
+        let entry = Arc::new(ResolveEntry::new(
+            domain.clone(),
+            self.ip_version,
+            self.metrics.clone(),
+        )?);
         entries.insert(domain, entry.clone());
         Ok(entry)
     }
@@ -202,7 +278,8 @@ mod tests {
 
     use super::*;
     use crate::infra::clock::AppClock;
-    use crate::infra::network::resolver::cache::CachedIp;
+    use crate::infra::network::metrics as network_metrics;
+    use crate::infra::network::resolver::ResolvedIp;
     use crate::proto::rdata::A;
     use crate::proto::{RData, Record};
 
@@ -413,9 +490,9 @@ mod tests {
         let entry = resolver
             .entry_for("example.com.".to_string())
             .expect("entry should exist");
-        *entry.cache.write().await = Some(CachedIp {
+        *entry.cache.write().await = Some(ResolvedIp {
             ip: first,
-            expires_at: 0,
+            expires_at_ms: 0,
         });
         let second = resolver
             .resolve(
@@ -428,6 +505,69 @@ mod tests {
         assert_eq!(first, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)));
         assert_eq!(second, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2)));
         assert_eq!(client.count(), 2);
+    }
+
+    #[tokio::test]
+    async fn resolver_metrics_record_hit_miss_refresh_and_error() {
+        start_clock();
+        let profile = network_metrics::profile_scope("oversea");
+        let before = network_metrics::snapshot_for_profile_for_tests("oversea");
+        let client = Arc::new(FakeClient::new(
+            "fake",
+            vec![
+                FakeOutcome::Response(answer_response(
+                    "example.com.",
+                    60,
+                    IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)),
+                )),
+                FakeOutcome::Error("boom"),
+            ],
+        ));
+        let resolver = NameResolver::from_clients_with_metrics(vec![client], None, profile);
+
+        let first = resolver
+            .resolve(
+                "example.com",
+                QueryDeadline::new(Duration::from_millis(200)),
+            )
+            .await
+            .expect("first resolve should refresh");
+        let second = resolver
+            .resolve(
+                "example.com",
+                QueryDeadline::new(Duration::from_millis(200)),
+            )
+            .await
+            .expect("second resolve should hit cache");
+        let err = resolver
+            .resolve(
+                "failed.example",
+                QueryDeadline::new(Duration::from_millis(200)),
+            )
+            .await
+            .expect_err("resolver refresh failure should be returned");
+
+        assert_eq!(first, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)));
+        assert_eq!(second, first);
+        assert!(err.to_string().contains("boom"));
+
+        let after = network_metrics::snapshot_for_profile_for_tests("oversea");
+        assert!(
+            after.resolver_cache_hit_total > before.resolver_cache_hit_total,
+            "expected resolver cache hit metric to increase: before={before:?}, after={after:?}"
+        );
+        assert!(
+            after.resolver_cache_miss_total >= before.resolver_cache_miss_total + 2,
+            "expected resolver cache miss metric to increase: before={before:?}, after={after:?}"
+        );
+        assert!(
+            after.resolver_refresh_total >= before.resolver_refresh_total + 2,
+            "expected resolver refresh metric to increase: before={before:?}, after={after:?}"
+        );
+        assert!(
+            after.resolver_error_total > before.resolver_error_total,
+            "expected resolver error metric to increase: before={before:?}, after={after:?}"
+        );
     }
 
     #[test]

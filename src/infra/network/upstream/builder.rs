@@ -166,13 +166,13 @@ impl UpstreamBuilder {
                 }
                 ConnectionType::TCP => {
                     let upstream: BootstrapUpstream<TcpConnection> =
-                        BootstrapUpstream::new(connection_info);
+                        BootstrapUpstream::tcp(connection_info);
                     Box::new(upstream)
                 }
                 #[cfg(feature = "upstream-dot")]
                 ConnectionType::DoT => {
                     let upstream: BootstrapUpstream<TcpConnection> =
-                        BootstrapUpstream::new(connection_info);
+                        BootstrapUpstream::tcp(connection_info);
                     Box::new(upstream)
                 }
                 #[cfg(not(feature = "upstream-dot"))]
@@ -185,7 +185,7 @@ impl UpstreamBuilder {
                 #[cfg(feature = "upstream-doq")]
                 ConnectionType::DoQ => {
                     let upstream: BootstrapUpstream<QuicConnection> =
-                        BootstrapUpstream::new(connection_info);
+                        BootstrapUpstream::doq(connection_info);
                     Box::new(upstream)
                 }
                 #[cfg(not(feature = "upstream-doq"))]
@@ -201,7 +201,7 @@ impl UpstreamBuilder {
                         #[cfg(feature = "upstream-doh3")]
                         {
                             let upstream: BootstrapUpstream<H3Connection> =
-                                BootstrapUpstream::new(connection_info);
+                                BootstrapUpstream::doh3(connection_info);
                             Box::new(upstream)
                         }
                         #[cfg(not(feature = "upstream-doh3"))]
@@ -213,7 +213,7 @@ impl UpstreamBuilder {
                         }
                     } else {
                         let upstream: BootstrapUpstream<H2Connection> =
-                            BootstrapUpstream::new(connection_info);
+                            BootstrapUpstream::doh2(connection_info);
                         Box::new(upstream)
                     }
                 }

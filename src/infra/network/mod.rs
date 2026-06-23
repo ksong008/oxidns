@@ -37,6 +37,7 @@ pub(crate) mod dial;
 pub mod http_client;
 pub(crate) mod ip;
 pub mod listen;
+pub(crate) mod metrics;
 pub(crate) mod outbound;
 pub mod proxy;
 pub(crate) mod resolver;

@@ -791,10 +791,10 @@ export const zhCNWebui = {
     workerThreadsPlaceholder: "留空使用系统默认",
     outboundCard: "出站网络",
     outboundCardDesc:
-      "配置 network.outbound profiles，供 HTTP 客户端、升级、下载和 opt-in 上游复用",
+      "配置 network.outbound profiles，供 HTTP 客户端、升级、下载和上游复用",
     defaultOutboundProfile: "默认出站配置",
     defaultOutboundProfileDesc:
-      "未显式选择 outbound 的客户端会使用该 profile；留空则直连并使用系统解析",
+      "未显式选择 outbound 的 HTTP 客户端和上游会使用该 profile；留空则直连并使用系统解析",
     addOutboundProfile: "添加出站配置",
     noOutboundProfiles: "尚未配置出站 profile",
     outboundProfileTitle: "Profile {index}",
@@ -818,6 +818,20 @@ export const zhCNWebui = {
     noNameservers: "至少添加一个 nameserver 才会写入自定义 resolver",
     dialAddrPlaceholder: "dial_addr，可选",
     removeNameserver: "删除 nameserver",
+    outboundMetricsTitle: "运行指标",
+    outboundMetricsDesc:
+      "按 outbound_profile 汇总 resolver 缓存、刷新错误和上游地址池刷新情况",
+    outboundMetricsEmpty: "暂无 outbound 运行指标",
+    outboundMetricsConfigured: "已配置",
+    outboundMetricsCacheHit: "缓存命中",
+    outboundMetricsRefreshAvg: "解析刷新平均",
+    outboundMetricsErrors: "解析错误",
+    outboundMetricsPoolRefresh: "地址池刷新",
+    outboundMetricsPoolAvg: "地址池刷新平均",
+    outboundMetricsReasons: "原因",
+    outboundMetricsProtocols: "协议",
+    outboundMetricsSystemProfile: "系统解析 / 直连",
+    outboundMetricsLocalProfile: "本地 bootstrap",
     mgmtApiCard: "管理 API",
     mgmtApiDesc: "HTTP 管理接口配置（api.http）",
     listenSection: "监听地址 (listen)",
@@ -889,7 +903,7 @@ export const zhCNWebui = {
     outboundProfile: "出站配置",
     outboundProfileDesc:
       "引用 network.outbound.profiles 中的配置；留空时使用默认出站配置",
-    outboundProfilePlaceholder: "oversea",
+    outboundProfilePlaceholder: "profile-1",
     socks5Proxy: "Socks5 代理",
     socks5ProxyDesc:
       "下载时使用的 SOCKS5 代理，不需要协议前缀；支持用户名和密码",

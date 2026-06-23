@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -14,7 +14,8 @@ use crate::config::types::{
     NetworkOutboundConfig, OutboundNameserverConfig, OutboundProfileConfig, OutboundProxyConfig,
     OutboundResolverConfig, OutboundResolverDetailedConfig,
 };
-use crate::infra::error::Result;
+use crate::infra::error::{DnsError, Result};
+use crate::infra::network::metrics::OUTBOUND_PROFILE_LOCAL;
 use crate::infra::network::outbound;
 use crate::infra::network::proxy::{parse_socks5_opt, parse_socks5_opt_with_resolver};
 use crate::infra::network::upstream::builder::{
@@ -139,9 +140,18 @@ fn make_upstream_config(addr: &str) -> UpstreamConfig {
     }
 }
 
-fn outbound_test_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+fn outbound_test_lock() -> &'static std::sync::Mutex<()> {
+    outbound::test_lock()
+}
+
+fn clean_connection_info(cfg: UpstreamConfig, message: &str) -> ConnectionInfo {
+    let _guard = outbound::TestGlobalGuard::clean();
+    ConnectionInfo::try_from(cfg).expect(message)
+}
+
+fn clean_connection_info_err(cfg: UpstreamConfig, message: &str) -> DnsError {
+    let _guard = outbound::TestGlobalGuard::clean();
+    ConnectionInfo::try_from(cfg).expect_err(message)
 }
 
 fn install_test_outbound_config() {
@@ -170,6 +180,32 @@ fn install_test_outbound_config() {
     outbound::install_global(&config).expect("outbound config should install");
 }
 
+fn install_test_default_outbound_config() {
+    let config = NetworkOutboundConfig {
+        default: Some("oversea".to_string()),
+        profiles: HashMap::from([(
+            "oversea".to_string(),
+            OutboundProfileConfig {
+                resolver: Some(OutboundResolverConfig::Nameservers(
+                    OutboundResolverDetailedConfig {
+                        nameservers: vec![OutboundNameserverConfig {
+                            addr: "1.1.1.1:53".to_string(),
+                            dial_addr: None,
+                        }],
+                        ip_version: Some(4),
+                        timeout: Some("500ms".to_string()),
+                        proxy: None,
+                    },
+                )),
+                proxy: Some(OutboundProxyConfig::Socks5 {
+                    socks5: "127.0.0.1:1080".to_string(),
+                }),
+            },
+        )]),
+    };
+    outbound::install_global(&config).expect("default outbound config should install");
+}
+
 fn install_test_outbound_resolver_only_config() {
     let config = NetworkOutboundConfig {
         default: None,
@@ -194,11 +230,35 @@ fn install_test_outbound_resolver_only_config() {
     outbound::install_global(&config).expect("outbound config should install");
 }
 
+fn install_test_default_outbound_resolver_only_config() {
+    let config = NetworkOutboundConfig {
+        default: Some("oversea".to_string()),
+        profiles: HashMap::from([(
+            "oversea".to_string(),
+            OutboundProfileConfig {
+                resolver: Some(OutboundResolverConfig::Nameservers(
+                    OutboundResolverDetailedConfig {
+                        nameservers: vec![OutboundNameserverConfig {
+                            addr: "1.1.1.1:53".to_string(),
+                            dial_addr: None,
+                        }],
+                        ip_version: Some(4),
+                        timeout: Some("500ms".to_string()),
+                        proxy: None,
+                    },
+                )),
+                proxy: None,
+            },
+        )]),
+    };
+    outbound::install_global(&config).expect("default outbound config should install");
+}
+
 #[test]
 fn test_helper_scheme_tcp_pipeline_forces_pipeline() {
     let mut cfg = make_upstream_config("tcp+pipeline://1.1.1.1");
     cfg.enable_pipeline = Some(false);
-    let info = ConnectionInfo::try_from(cfg).expect("helper scheme should be accepted");
+    let info = clean_connection_info(cfg, "helper scheme should be accepted");
     assert_eq!(info.connection_type, ConnectionType::TCP);
     assert_eq!(info.enable_pipeline, Some(true));
 }
@@ -207,7 +267,7 @@ fn test_helper_scheme_tcp_pipeline_forces_pipeline() {
 fn test_helper_scheme_h3_forces_http3() {
     let mut cfg = make_upstream_config("h3://dns.google/dns-query");
     cfg.enable_http3 = Some(false);
-    let info = ConnectionInfo::try_from(cfg).expect("helper scheme should be accepted");
+    let info = clean_connection_info(cfg, "helper scheme should be accepted");
     assert_eq!(info.connection_type, ConnectionType::DoH);
     assert!(info.enable_http3);
 }
@@ -219,10 +279,10 @@ fn test_connection_info_defers_domain_resolution() {
     assert_eq!(info.server_name, "dns.example.invalid");
     assert!(info.remote_ip.is_none());
 
-    let info = ConnectionInfo::try_from(make_upstream_config(
-        "https://resolver.example.invalid/dns-query",
-    ))
-    .expect("domain upstream config should parse without DNS resolution");
+    let info = clean_connection_info(
+        make_upstream_config("https://resolver.example.invalid/dns-query"),
+        "domain upstream config should parse without DNS resolution",
+    );
     assert_eq!(info.server_name, "resolver.example.invalid");
     assert!(info.remote_ip.is_none());
 }
@@ -232,7 +292,7 @@ fn test_connection_info_uses_dial_addr_for_domain() {
     let mut cfg = make_upstream_config("tls://dns.example.invalid:853");
     cfg.dial_addr = Some(IpAddr::from_str("203.0.113.53").unwrap());
 
-    let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
+    let info = clean_connection_info(cfg, "upstream config should parse");
     assert_eq!(info.server_name, "dns.example.invalid");
     assert_eq!(
         info.remote_ip,
@@ -246,7 +306,7 @@ fn test_connection_info_dial_addr_takes_precedence_over_bootstrap() {
     cfg.dial_addr = Some(IpAddr::from_str("203.0.113.53").unwrap());
     cfg.bootstrap = Some("8.8.8.8:53".to_string());
 
-    let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
+    let info = clean_connection_info(cfg, "upstream config should parse");
     assert_eq!(
         info.remote_ip,
         Some(IpAddr::from_str("203.0.113.53").unwrap())
@@ -268,6 +328,51 @@ fn test_connection_info_uses_outbound_resolver_for_domain() {
     assert!(info.remote_ip.is_none());
     assert!(info.bootstrap.is_some());
     assert_eq!(info.bootstrap_timeout, Some(Duration::from_millis(500)));
+    assert_eq!(
+        info.bootstrap
+            .as_ref()
+            .expect("outbound resolver should be injected")
+            .profile(),
+        "oversea"
+    );
+    outbound::clear_global();
+}
+
+#[test]
+fn test_connection_info_without_default_outbound_keeps_domain_resolution_deferred() {
+    let _guard = outbound_test_lock()
+        .lock()
+        .expect("outbound test lock should not be poisoned");
+    outbound::clear_global();
+
+    let cfg = make_upstream_config("tls://dns.example.invalid:853");
+    let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
+
+    assert!(info.remote_ip.is_none());
+    assert!(info.bootstrap.is_none());
+    outbound::clear_global();
+}
+
+#[test]
+fn test_connection_info_uses_default_outbound_resolver_for_domain() {
+    let _guard = outbound_test_lock()
+        .lock()
+        .expect("outbound test lock should not be poisoned");
+    install_test_default_outbound_resolver_only_config();
+
+    let cfg = make_upstream_config("tls://dns.example.invalid:853");
+    let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
+
+    assert!(info.remote_ip.is_none());
+    assert!(info.bootstrap.is_some());
+    assert_eq!(info.bootstrap_timeout, Some(Duration::from_millis(500)));
+    assert_eq!(
+        info.bootstrap
+            .as_ref()
+            .expect("default outbound resolver should be injected")
+            .profile(),
+        "oversea"
+    );
     outbound::clear_global();
 }
 
@@ -333,6 +438,27 @@ fn test_connection_info_uses_outbound_proxy_when_local_socks5_absent() {
 }
 
 #[test]
+fn test_connection_info_uses_default_outbound_proxy_when_local_socks5_absent() {
+    let _guard = outbound_test_lock()
+        .lock()
+        .expect("outbound test lock should not be poisoned");
+    install_test_default_outbound_config();
+
+    let cfg = make_upstream_config("tcp://1.1.1.1:53");
+    let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
+
+    assert_eq!(
+        info.socks5
+            .as_ref()
+            .expect("default outbound proxy should be injected")
+            .socket_addr
+            .port(),
+        1080
+    );
+    outbound::clear_global();
+}
+
+#[test]
 fn test_connection_info_rejects_outbound_proxy_for_udp_upstream() {
     let _guard = outbound_test_lock()
         .lock()
@@ -342,6 +468,21 @@ fn test_connection_info_rejects_outbound_proxy_for_udp_upstream() {
     let mut cfg = make_upstream_config("8.8.8.8");
     cfg.outbound = Some("oversea".to_string());
     let err = ConnectionInfo::try_from(cfg).expect_err("UDP upstream should reject profile proxy");
+
+    assert!(err.to_string().contains("does not support UDP"), "{err}");
+    outbound::clear_global();
+}
+
+#[test]
+fn test_connection_info_rejects_default_outbound_proxy_for_udp_upstream() {
+    let _guard = outbound_test_lock()
+        .lock()
+        .expect("outbound test lock should not be poisoned");
+    install_test_default_outbound_config();
+
+    let cfg = make_upstream_config("8.8.8.8");
+    let err = ConnectionInfo::try_from(cfg)
+        .expect_err("UDP upstream should reject default profile proxy");
 
     assert!(err.to_string().contains("does not support UDP"), "{err}");
     outbound::clear_global();
@@ -371,6 +512,51 @@ fn test_connection_info_local_socks5_overrides_outbound_proxy() {
 }
 
 #[test]
+fn test_connection_info_local_socks5_overrides_default_outbound_proxy() {
+    let _guard = outbound_test_lock()
+        .lock()
+        .expect("outbound test lock should not be poisoned");
+    install_test_default_outbound_config();
+
+    let mut cfg = make_upstream_config("tcp://1.1.1.1:53");
+    cfg.socks5 = Some("127.0.0.1:1081".to_string());
+    let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
+
+    assert_eq!(
+        info.socks5
+            .as_ref()
+            .expect("local proxy should be retained")
+            .socket_addr
+            .port(),
+        1081
+    );
+    outbound::clear_global();
+}
+
+#[test]
+fn test_connection_info_local_bootstrap_overrides_default_outbound_resolver() {
+    let _guard = outbound_test_lock()
+        .lock()
+        .expect("outbound test lock should not be poisoned");
+    install_test_default_outbound_resolver_only_config();
+
+    let mut cfg = make_upstream_config("tls://dns.example.invalid:853");
+    cfg.bootstrap = Some("8.8.8.8:53".to_string());
+    let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
+
+    assert!(info.bootstrap.is_some());
+    assert!(info.bootstrap_timeout.is_none());
+    assert_eq!(
+        info.bootstrap
+            .as_ref()
+            .expect("local bootstrap resolver should be retained")
+            .profile(),
+        OUTBOUND_PROFILE_LOCAL
+    );
+    outbound::clear_global();
+}
+
+#[test]
 fn test_connection_info_rejects_invalid_local_socks5_with_outbound_proxy() {
     let _guard = outbound_test_lock()
         .lock()
@@ -392,7 +578,7 @@ fn test_connection_info_rejects_invalid_bootstrap_version() {
     cfg.bootstrap = Some("8.8.8.8:53".to_string());
     cfg.bootstrap_version = Some(5);
 
-    let err = ConnectionInfo::try_from(cfg).expect_err("invalid bootstrap_version should fail");
+    let err = clean_connection_info_err(cfg, "invalid bootstrap_version should fail");
 
     assert!(
         err.to_string().contains("bootstrap_version must be 4 or 6"),
@@ -404,7 +590,7 @@ fn test_connection_info_rejects_invalid_bootstrap_version() {
 fn test_max_conns_is_preserved() {
     let mut cfg = make_upstream_config("8.8.8.8");
     cfg.max_conns = Some(999);
-    let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
+    let info = clean_connection_info(cfg, "upstream config should parse");
     assert_eq!(info.max_conns, Some(999));
 }
 
@@ -413,7 +599,7 @@ fn test_max_conns_rejects_zero() {
     let mut cfg = make_upstream_config("8.8.8.8");
     cfg.max_conns = Some(0);
 
-    let err = ConnectionInfo::try_from(cfg).expect_err("zero max_conns should be rejected");
+    let err = clean_connection_info_err(cfg, "zero max_conns should be rejected");
 
     assert!(
         err.to_string().contains("max_conns must be greater than 0"),
@@ -426,7 +612,7 @@ fn test_max_conns_rejects_excessive_value() {
     let mut cfg = make_upstream_config("8.8.8.8");
     cfg.max_conns = Some(ConnectionInfo::MAX_CONFIGURED_CONNS_SIZE + 1);
 
-    let err = ConnectionInfo::try_from(cfg).expect_err("excessive max_conns should be rejected");
+    let err = clean_connection_info_err(cfg, "excessive max_conns should be rejected");
 
     assert!(
         err.to_string().contains("max_conns must be <= 4096"),
@@ -439,7 +625,7 @@ fn test_min_conns_is_preserved() {
     let mut cfg = make_upstream_config("8.8.8.8");
     cfg.min_conns = Some(3);
 
-    let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
+    let info = clean_connection_info(cfg, "upstream config should parse");
 
     assert_eq!(info.min_conns, Some(3));
 }
@@ -449,7 +635,7 @@ fn test_min_conns_allows_zero() {
     let mut cfg = make_upstream_config("8.8.8.8");
     cfg.min_conns = Some(0);
 
-    let info = ConnectionInfo::try_from(cfg).expect("zero min_conns should be accepted");
+    let info = clean_connection_info(cfg, "zero min_conns should be accepted");
 
     assert_eq!(info.min_conns, Some(0));
     assert_eq!(info.min_conns_or_default(), 0);
@@ -461,7 +647,7 @@ fn test_min_conns_rejects_excessive_value() {
     cfg.max_conns = Some(ConnectionInfo::MAX_CONFIGURED_CONNS_SIZE);
     cfg.min_conns = Some(ConnectionInfo::MAX_CONFIGURED_CONNS_SIZE + 1);
 
-    let err = ConnectionInfo::try_from(cfg).expect_err("excessive min_conns should be rejected");
+    let err = clean_connection_info_err(cfg, "excessive min_conns should be rejected");
 
     assert!(
         err.to_string().contains("min_conns must be <= 4096"),
@@ -475,8 +661,10 @@ fn test_min_conns_rejects_value_above_configured_max_conns() {
     cfg.max_conns = Some(2);
     cfg.min_conns = Some(3);
 
-    let err = ConnectionInfo::try_from(cfg)
-        .expect_err("min_conns above configured max_conns should be rejected");
+    let err = clean_connection_info_err(
+        cfg,
+        "min_conns above configured max_conns should be rejected",
+    );
 
     assert!(
         err.to_string().contains("min_conns must be <= max_conns"),
@@ -489,8 +677,8 @@ fn test_min_conns_rejects_value_above_default_max_conns() {
     let mut cfg = make_upstream_config("8.8.8.8");
     cfg.min_conns = Some(ConnectionInfo::DEFAULT_MAX_CONNS_SIZE + 1);
 
-    let err = ConnectionInfo::try_from(cfg)
-        .expect_err("min_conns above default max_conns should be rejected");
+    let err =
+        clean_connection_info_err(cfg, "min_conns above default max_conns should be rejected");
 
     assert!(err.to_string().contains("effective max_conns: 64"), "{err}");
 }

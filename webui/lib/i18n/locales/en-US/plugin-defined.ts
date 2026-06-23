@@ -349,7 +349,7 @@ export const enUSPluginDefined = {
           label: "Outbound Profile",
           description:
             "Reference a profile from network.outbound.profiles to inject resolver and proxy defaults into this upstream. Local dial_addr, bootstrap, and socks5 take precedence.",
-          placeholder: "oversea",
+          placeholder: "profile-1",
         },
         "upstreams[].dial_addr": {
           label: "Dial-up IP",
@@ -1309,7 +1309,7 @@ export const enUSPluginDefined = {
           label: "Outbound profile",
           description:
             "Reference a profile from network.outbound.profiles to control resolver and proxy settings.",
-          placeholder: "oversea",
+          placeholder: "profile-1",
         },
         socks5: {
           label: "SOCKS5 proxy",
@@ -1754,7 +1754,7 @@ export const enUSPluginDefined = {
           label: "Outbound profile",
           description:
             "Reference a profile from network.outbound.profiles for upgrade downloads.",
-          placeholder: "oversea",
+          placeholder: "profile-1",
         },
         socks5: {
           label: "SOCKS5 proxy",
@@ -1809,7 +1809,7 @@ export const enUSPluginDefined = {
           label: "Outbound profile",
           description:
             "Reference a profile from network.outbound.profiles to control download resolver and proxy settings.",
-          placeholder: "oversea",
+          placeholder: "profile-1",
         },
         socks5: {
           label: "SOCKS5 proxy",

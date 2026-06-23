@@ -33,7 +33,11 @@ import {
   type ReloadSnapshot,
   type SystemResponse,
 } from "./oxidns-api";
-import { parsePrometheusMetrics, type PluginMetricsMap } from "./metrics";
+import {
+  parsePrometheusMetrics,
+  type OutboundMetricsMap,
+  type PluginMetricsMap,
+} from "./metrics";
 import {
   getIncomingPluginReferences,
   getReplacementCandidates,
@@ -90,6 +94,7 @@ interface AppState {
   system: SystemResponse | null;
   reloadStatus: ReloadSnapshot | null;
   pluginMetrics: PluginMetricsMap;
+  outboundMetrics: OutboundMetricsMap;
   dependencyGraph: DependencyGraphReport | null;
   configDiagnostics: string[];
   configHistory: ConfigSnapshot[];
@@ -187,6 +192,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   system: null,
   reloadStatus: null,
   pluginMetrics: {},
+  outboundMetrics: {},
   dependencyGraph: null,
   configDiagnostics: [],
   configHistory: [],
@@ -339,7 +345,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   refreshMetrics: async () => {
     try {
       const text = await fetchPrometheusMetrics();
-      set({ pluginMetrics: parsePrometheusMetrics(text).byTag });
+      const metrics = parsePrometheusMetrics(text);
+      set({ pluginMetrics: metrics.byTag, outboundMetrics: metrics.outbound });
     } catch {
       // Metrics are best-effort observability; keep the last snapshot on
       // transient errors (e.g. API hub torn down during reload).
