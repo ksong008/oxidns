@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -448,6 +449,15 @@ export default function SettingsPage() {
   }, [configModel]);
 
   const canConnect = backendUrl.trim().length > 0;
+  const outboundProfileNames = outboundProfiles
+    .map((profile) => profile.name.trim())
+    .filter(Boolean);
+  const upgradeOutboundValue = upgradeConfig.outbound.trim();
+  const upgradeOutboundOptions = outboundProfileNames.includes(
+    upgradeOutboundValue,
+  )
+    ? outboundProfileNames
+    : [...outboundProfileNames, upgradeOutboundValue].filter(Boolean);
   const runtimeVersion = system?.build
     ? `${system.build.version} (${system.build.bundle})`
     : health?.build_bundle
@@ -2026,16 +2036,34 @@ export default function SettingsPage() {
                         <p className="text-xs text-muted-foreground mb-2">
                           {t(WEBUI.settings.outboundProfileDesc)}
                         </p>
-                        <Input
-                          value={upgradeConfig.outbound}
-                          onChange={(e) =>
-                            setUpgradeConfig({ outbound: e.target.value })
+                        <Select
+                          value={upgradeOutboundValue || "__unset__"}
+                          onValueChange={(value) =>
+                            setUpgradeConfig({
+                              outbound: value === "__unset__" ? "" : value,
+                            })
                           }
-                          placeholder={t(
-                            WEBUI.settings.outboundProfilePlaceholder,
-                          )}
-                          className="font-mono"
-                        />
+                        >
+                          <SelectTrigger className="w-full font-mono">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              <SelectItem value="__unset__">
+                                {t(WEBUI.common.unconfigured)}
+                              </SelectItem>
+                              {upgradeOutboundOptions.map((profileName) => (
+                                <SelectItem
+                                  key={profileName}
+                                  value={profileName}
+                                  className="font-mono"
+                                >
+                                  {profileName}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
                       </Field>
                       <Field>
                         <FieldLabel>{t(WEBUI.settings.socks5Proxy)}</FieldLabel>
