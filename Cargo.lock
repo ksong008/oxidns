@@ -1877,7 +1877,7 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "oxidns"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "ahash",
  "aho-corasick",
@@ -1955,7 +1955,7 @@ dependencies = [
 
 [[package]]
 name = "oxidns-proto"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ahash",
  "hotpath",
