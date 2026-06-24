@@ -328,6 +328,17 @@ export const enUSPluginDefined = {
           description:
             "Defines the number of concurrent query fanouts in multi-upstream mode.",
         },
+        response_selection: {
+          label: "Response selection",
+          description:
+            "Defines how to choose a result when concurrent upstream responses disagree.",
+          options: {
+            fastest: "Fastest response",
+            balanced: "Balanced",
+            prefer_positive: "Prefer positive answer",
+            consensus: "Negative consensus",
+          },
+        },
         upstreams: {
           label: "upstream list",
           description: "Define one or more upstream targets.",

@@ -292,6 +292,16 @@ export const zhCNPluginDefined = {
           label: "并发上游数",
           description: "定义多上游模式下的并发查询扇出数。",
         },
+        response_selection: {
+          label: "结果选择",
+          description: "定义多上游并发返回不一致时的结果选择策略。",
+          options: {
+            fastest: "最快响应",
+            balanced: "平衡",
+            prefer_positive: "优先正向答案",
+            consensus: "负向共识",
+          },
+        },
         upstreams: {
           label: "上游列表",
           description: "定义一个或多个上游目标。",
