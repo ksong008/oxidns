@@ -124,6 +124,19 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         default: 1,
       },
       {
+        key: "response_selection",
+        description: "定义多上游并发返回不一致时的结果选择策略。",
+        label: "结果选择",
+        type: "select",
+        default: "balanced",
+        options: [
+          { label: "最快响应", value: "fastest" },
+          { label: "平衡", value: "balanced" },
+          { label: "优先正向答案", value: "prefer_positive" },
+          { label: "负向共识", value: "consensus" },
+        ],
+      },
+      {
         key: "upstreams",
         description: "定义一个或多个上游目标。",
         label: "上游列表",

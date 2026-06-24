@@ -154,6 +154,8 @@ Sends DNS queries to upstreams.
   args:
     # Effective fan-out in multi-upstream mode
     concurrent: 3
+    # Concurrent upstream response selection: fastest / balanced / prefer_positive / consensus
+    response_selection: balanced
     upstreams:
       # Simplest UDP upstream
       - tag: "cf_udp"
@@ -196,6 +198,17 @@ Sends DNS queries to upstreams.
 - Type: `integer`; Required: no; Default: `1`
 - Runtime range is clamped to `1..=3`.
 - Purpose: Number of concurrent upstream fan-out requests.
+
+#### `response_selection`
+
+- Type: `string`; Required: no; Default: `balanced`
+- Values: `fastest`, `balanced`, `prefer_positive`, `consensus`
+- Purpose: Selects the winning response when concurrent upstreams return different results.
+- Modes:
+  - `fastest`: the first successful DNS response wins; transport errors never win.
+  - `balanced`: default mode. `NOERROR` with answers wins immediately; `NXDOMAIN` or NODATA waits briefly for a positive answer.
+  - `prefer_positive`: positive answers win immediately; negative answers wait until all started concurrent upstreams finish.
+  - `consensus`: positive answers win immediately; negative answers require two upstream confirmations, falling back to `prefer_positive` when fan-out is too small.
 
 #### `upstreams`
 

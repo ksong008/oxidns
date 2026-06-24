@@ -162,6 +162,8 @@ import Admonition from "@theme/Admonition";
   args:
     # 多上游模式下实际并发扇出
     concurrent: 3
+    # 并发上游结果选择模式：fastest / balanced / prefer_positive / consensus
+    response_selection: balanced
     upstreams:
       # 最简单的 UDP 上游
       - tag: "cf_udp"
@@ -205,6 +207,17 @@ import Admonition from "@theme/Admonition";
 - 作用：定义多上游模式下的并发查询扇出数。
 - 运行影响：
   - 值越大，多上游竞争越积极，但同时会增加上游请求量。
+
+#### `response_selection`
+
+- 类型：`string`；必填：否；默认值：`balanced`
+- 取值：`fastest`、`balanced`、`prefer_positive`、`consensus`
+- 作用：定义多上游并发返回不一致时的结果选择策略。
+- 模式说明：
+  - `fastest`：第一个成功返回的 DNS 响应胜出，传输错误不会胜出。
+  - `balanced`：默认模式。`NOERROR` 且包含答案时立即胜出；`NXDOMAIN` 或 NODATA 会短暂等待是否有正向答案。
+  - `prefer_positive`：正向答案立即胜出；负向答案等待已发起的并发上游全部结束后再返回。
+  - `consensus`：正向答案立即胜出；负向答案需要两个上游确认，若并发数不足则退化为 `prefer_positive`。
 
 #### `upstreams`
 

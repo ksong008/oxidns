@@ -49,6 +49,8 @@ export const pluginFieldDocs = {
   forward: {
     concurrent:
       "- 类型：`integer`；必填：否；默认值：`1`\n- 取值范围：实际运行时会限制在 `1..=3`\n- 作用：定义多上游模式下的并发查询扇出数。\n- 运行影响：\n  - 值越大，多上游竞争越积极，但同时会增加上游请求量。",
+    response_selection:
+      "- 类型：`string`；必填：否；默认值：`balanced`\n- 可选值：`fastest`、`balanced`、`prefer_positive`、`consensus`\n- 作用：定义多上游并发返回不一致时的结果选择策略。\n- 模式说明：\n  - `fastest`：第一个成功返回的 DNS 响应胜出，传输错误不会胜出。\n  - `balanced`：默认模式，正向答案立即胜出，负向答案会短暂等待。\n  - `prefer_positive`：正向答案立即胜出，负向答案等待已发起的并发上游全部结束。\n  - `consensus`：正向答案立即胜出，负向答案需要两个上游确认。",
     upstreams:
       "- 类型：`array`；必填：是；默认值：无\n- 作用：定义一个或多个上游目标。\n- 运行影响：\n  - 数组长度为 `1` 时使用单上游模式。\n  - 数组长度大于 `1` 时使用竞争式查询模式。",
     short_circuit:

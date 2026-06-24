@@ -10,11 +10,12 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use rand::RngExt;
 use serde::Deserialize;
-use tokio::task::JoinSet;
+use tokio::task::{JoinError, JoinSet};
 use tracing::{Level, debug, event_enabled, info, warn};
 
 use crate::config::types::PluginConfig;
@@ -32,6 +33,8 @@ use crate::plugin_factory;
 use crate::proto::{Message, Rcode};
 
 const MAX_CONCURRENT_QUERIES: usize = 3;
+const BALANCED_NEGATIVE_GRACE: Duration = Duration::from_millis(100);
+const CONSENSUS_NEGATIVE_VOTES: usize = 2;
 
 /// Per-upstream forward counters.
 ///
@@ -361,6 +364,8 @@ pub struct ConcurrentForwarder {
     /// Whether to stop the executor chain after a successful upstream response.
     pub short_circuit: bool,
 
+    pub response_selection: ResponseSelectionMode,
+
     metrics: Arc<ForwardMetrics>,
 }
 
@@ -386,8 +391,7 @@ impl Executor for ConcurrentForwarder {
     #[hotpath::measure]
     async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
         let start_ms = self.metrics.record_query_start();
-        let (response, last_error, timed_out) =
-            self.query_any_upstream(context.request.clone()).await;
+        let (response, last_error, timed_out) = self.query_upstreams(context.request.clone()).await;
         if let Some(response) = response {
             context.set_response(response);
             self.metrics.record_success(start_ms);
@@ -417,19 +421,13 @@ impl ConcurrentForwarder {
         }
     }
 
-    async fn query_any_upstream(
-        &self,
-        request: Message,
-    ) -> (Option<Message>, Option<String>, bool) {
+    async fn query_upstreams(&self, request: Message) -> (Option<Message>, Option<String>, bool) {
         let total_upstreams = self.upstreams.len();
         if total_upstreams == 0 {
             return (None, Some("no upstream configured".to_string()), false);
         }
 
         let mut join_set = JoinSet::new();
-        let mut last_error: Option<String> = None;
-        let mut last_timeout = false;
-        let mut completed = 0usize;
         let start_idx = rand::rng().random_range(0..total_upstreams);
 
         for i in 0..self.active_concurrent {
@@ -457,34 +455,262 @@ impl ConcurrentForwarder {
             });
         }
 
-        while let Some(joined) = join_set.join_next().await {
-            completed += 1;
-            match joined {
-                Ok(Ok(response)) => {
-                    if completed < self.active_concurrent && !is_preferred_rcode(response.rcode()) {
-                        continue;
+        select_response(
+            &mut join_set,
+            self.active_concurrent,
+            self.response_selection,
+        )
+        .await
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseSelectionMode {
+    /// First DNS response wins. Transport errors never win.
+    Fastest,
+    /// Positive answers win immediately; negative answers wait briefly.
+    #[default]
+    Balanced,
+    /// Positive answers win immediately; negative answers wait for all
+    /// attempts.
+    PreferPositive,
+    /// Positive answers win immediately; negative answers need two
+    /// confirmations.
+    Consensus,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ResponseClass {
+    Positive,
+    Negative,
+    Other,
+}
+
+#[derive(Debug)]
+struct SelectionState {
+    completed: usize,
+    last_error: Option<String>,
+    last_timeout: bool,
+    best_response: Option<Message>,
+    negative_votes: usize,
+}
+
+impl SelectionState {
+    fn new() -> Self {
+        Self {
+            completed: 0,
+            last_error: None,
+            last_timeout: false,
+            best_response: None,
+            negative_votes: 0,
+        }
+    }
+
+    fn record_response(&mut self, response: Message) -> ResponseClass {
+        let class = classify_response(&response);
+        if class == ResponseClass::Negative {
+            self.negative_votes += 1;
+        }
+        if should_replace_best(self.best_response.as_ref(), &response) {
+            self.best_response = Some(response);
+        }
+        class
+    }
+
+    fn record_error(&mut self, err: DnsError) {
+        warn!("DNS query failed: {}", err);
+        self.last_timeout |= is_timeout_error(&err);
+        self.last_error = Some(err.to_string());
+    }
+
+    fn record_join_error(&mut self, err: JoinError) {
+        self.last_error = Some(format!("forward subtask join failed: {}", err));
+    }
+
+    fn finish(self) -> (Option<Message>, Option<String>, bool) {
+        (self.best_response, self.last_error, self.last_timeout)
+    }
+}
+
+async fn select_response(
+    join_set: &mut JoinSet<Result<Message>>,
+    active_concurrent: usize,
+    mode: ResponseSelectionMode,
+) -> (Option<Message>, Option<String>, bool) {
+    match mode {
+        ResponseSelectionMode::Fastest => select_fastest(join_set).await,
+        ResponseSelectionMode::Balanced => select_balanced(join_set, active_concurrent).await,
+        ResponseSelectionMode::PreferPositive => {
+            select_prefer_positive(join_set, active_concurrent).await
+        }
+        ResponseSelectionMode::Consensus => select_consensus(join_set, active_concurrent).await,
+    }
+}
+
+async fn select_fastest(
+    join_set: &mut JoinSet<Result<Message>>,
+) -> (Option<Message>, Option<String>, bool) {
+    let mut state = SelectionState::new();
+    while let Some(joined) = join_set.join_next().await {
+        match joined {
+            Ok(Ok(response)) => {
+                join_set.abort_all();
+                return (Some(response), None, false);
+            }
+            Ok(Err(err)) => state.record_error(err),
+            Err(err) => state.record_join_error(err),
+        }
+    }
+    state.finish()
+}
+
+async fn select_prefer_positive(
+    join_set: &mut JoinSet<Result<Message>>,
+    active_concurrent: usize,
+) -> (Option<Message>, Option<String>, bool) {
+    let mut state = SelectionState::new();
+    while let Some(class) = next_response_class(join_set, &mut state).await {
+        if class == ResponseClass::Positive {
+            join_set.abort_all();
+            return (state.best_response, None, false);
+        }
+        if state.completed >= active_concurrent {
+            break;
+        }
+    }
+    state.finish()
+}
+
+async fn select_balanced(
+    join_set: &mut JoinSet<Result<Message>>,
+    active_concurrent: usize,
+) -> (Option<Message>, Option<String>, bool) {
+    let mut state = SelectionState::new();
+    let mut negative_grace =
+        std::pin::Pin::from(Box::new(tokio::time::sleep(BALANCED_NEGATIVE_GRACE)));
+
+    loop {
+        tokio::select! {
+            joined = join_set.join_next() => {
+                let Some(joined) = joined else {
+                    return state.finish();
+                };
+                let Some(class) = handle_joined_response(joined, &mut state) else {
+                    if state.completed >= active_concurrent {
+                        return state.finish();
                     }
-                    join_set.abort_all();
-                    return (Some(response), None, false);
+                    continue;
+                };
+                match class {
+                    ResponseClass::Positive => {
+                        join_set.abort_all();
+                        return (state.best_response, None, false);
+                    }
+                    ResponseClass::Negative => {
+                        if state.completed >= active_concurrent {
+                            return state.finish();
+                        }
+                        if state.negative_votes == 1 {
+                            negative_grace.as_mut().reset(tokio::time::Instant::now() + BALANCED_NEGATIVE_GRACE);
+                        }
+                    }
+                    ResponseClass::Other => {
+                        if state.completed >= active_concurrent {
+                            return state.finish();
+                        }
+                    }
                 }
-                Ok(Err(e)) => {
-                    warn!("DNS query failed: {}", e);
-                    last_timeout |= is_timeout_error(&e);
-                    last_error = Some(e.to_string());
-                }
-                Err(e) => {
-                    last_error = Some(format!("forward subtask join failed: {}", e));
+            }
+            _ = &mut negative_grace, if state.negative_votes > 0 => {
+                join_set.abort_all();
+                return (state.best_response, None, false);
+            }
+        }
+    }
+}
+
+async fn select_consensus(
+    join_set: &mut JoinSet<Result<Message>>,
+    active_concurrent: usize,
+) -> (Option<Message>, Option<String>, bool) {
+    if active_concurrent < CONSENSUS_NEGATIVE_VOTES {
+        return select_prefer_positive(join_set, active_concurrent).await;
+    }
+
+    let mut state = SelectionState::new();
+    while let Some(class) = next_response_class(join_set, &mut state).await {
+        match class {
+            ResponseClass::Positive => {
+                join_set.abort_all();
+                return (state.best_response, None, false);
+            }
+            ResponseClass::Negative if state.negative_votes >= CONSENSUS_NEGATIVE_VOTES => {
+                join_set.abort_all();
+                return (state.best_response, None, false);
+            }
+            ResponseClass::Negative | ResponseClass::Other => {
+                if state.completed >= active_concurrent {
+                    break;
                 }
             }
         }
+    }
+    state.finish()
+}
 
-        (None, last_error, last_timeout)
+async fn next_response_class(
+    join_set: &mut JoinSet<Result<Message>>,
+    state: &mut SelectionState,
+) -> Option<ResponseClass> {
+    loop {
+        let joined = join_set.join_next().await?;
+        if let Some(class) = handle_joined_response(joined, state) {
+            return Some(class);
+        }
+    }
+}
+
+fn handle_joined_response(
+    joined: std::result::Result<Result<Message>, JoinError>,
+    state: &mut SelectionState,
+) -> Option<ResponseClass> {
+    state.completed += 1;
+    match joined {
+        Ok(Ok(response)) => Some(state.record_response(response)),
+        Ok(Err(err)) => {
+            state.record_error(err);
+            None
+        }
+        Err(err) => {
+            state.record_join_error(err);
+            None
+        }
     }
 }
 
 #[inline]
-fn is_preferred_rcode(code: Rcode) -> bool {
-    code == Rcode::NoError || code == Rcode::NXDomain
+fn classify_response(response: &Message) -> ResponseClass {
+    match response.rcode() {
+        Rcode::NoError if !response.answers().is_empty() => ResponseClass::Positive,
+        Rcode::NoError | Rcode::NXDomain => ResponseClass::Negative,
+        _ => ResponseClass::Other,
+    }
+}
+
+fn should_replace_best(current: Option<&Message>, candidate: &Message) -> bool {
+    let Some(current) = current else {
+        return true;
+    };
+    response_rank(candidate) >= response_rank(current)
+}
+
+fn response_rank(response: &Message) -> u8 {
+    match classify_response(response) {
+        ResponseClass::Positive => 3,
+        ResponseClass::Negative => 2,
+        ResponseClass::Other => 1,
+    }
 }
 
 fn is_timeout_error(err: &DnsError) -> bool {
@@ -618,6 +844,12 @@ pub struct ForwardConfig {
     /// Defaults to `1`, and clamped to `1..=3`.
     pub concurrent: Option<usize>,
 
+    /// Concurrent upstream response selection mode.
+    ///
+    /// Defaults to `balanced`.
+    #[serde(default)]
+    pub response_selection: ResponseSelectionMode,
+
     /// List of upstream DNS servers
     pub upstreams: Vec<UpstreamConfig>,
 
@@ -639,6 +871,7 @@ impl PluginFactory for ForwardFactory {
     ) -> Result<UninitializedPlugin> {
         let forward_config = parse_forward_config(plugin_config)?;
         let short_circuit = forward_config.short_circuit;
+        let response_selection = forward_config.response_selection;
 
         if forward_config.upstreams.len() == 1 {
             // Single upstream configuration
@@ -681,6 +914,7 @@ impl PluginFactory for ForwardFactory {
                     active_concurrent,
                     upstreams,
                     short_circuit,
+                    response_selection,
                     metrics: Arc::new(ForwardMetrics::new(plugin_config.tag.clone(), names)),
                 },
             )))
@@ -729,6 +963,7 @@ impl PluginFactory for ForwardFactory {
                     active_concurrent: MAX_CONCURRENT_QUERIES,
                     upstreams,
                     short_circuit,
+                    response_selection: ResponseSelectionMode::default(),
                     metrics: Arc::new(ForwardMetrics::new(tag.to_string(), names)),
                 },
             )))
@@ -742,12 +977,13 @@ mod tests {
 
     use super::*;
     use crate::infra::network::upstream::QueryDeadline;
-    use crate::proto::{Name, Question, Rcode, RecordType};
+    use crate::proto::{A, Name, Question, RData, Rcode, Record, RecordType};
 
     #[derive(Debug)]
     struct MockUpstream {
         connection_info: ConnectionInfo,
         response_code: Option<Rcode>,
+        answer: bool,
         fail_message: Option<String>,
         delay: Duration,
     }
@@ -757,11 +993,18 @@ mod tests {
             Self::response(Rcode::NoError, Duration::ZERO)
         }
 
+        fn ok_with_answer(delay: Duration) -> Self {
+            let mut upstream = Self::response(Rcode::NoError, delay);
+            upstream.answer = true;
+            upstream
+        }
+
         fn response(response_code: Rcode, delay: Duration) -> Self {
             Self {
                 connection_info: ConnectionInfo::with_addr("1.1.1.1")
                     .expect("mock upstream addr must be valid"),
                 response_code: Some(response_code),
+                answer: false,
                 fail_message: None,
                 delay,
             }
@@ -772,6 +1015,7 @@ mod tests {
                 connection_info: ConnectionInfo::with_addr("1.1.1.1")
                     .expect("mock upstream addr must be valid"),
                 response_code: None,
+                answer: false,
                 fail_message: Some(msg.to_string()),
                 delay,
             }
@@ -788,7 +1032,15 @@ mod tests {
                 return Err(DnsError::plugin(err.clone()));
             }
             let response_code = self.response_code.unwrap_or(Rcode::NoError);
-            Ok(request.response(response_code))
+            let mut response = request.response(response_code);
+            if self.answer {
+                response.add_answer(Record::from_rdata(
+                    Name::from_ascii("example.com.").unwrap(),
+                    60,
+                    RData::A(A("192.0.2.1".parse().unwrap())),
+                ));
+            }
+            Ok(response)
         }
 
         fn connection_info(&self) -> &ConnectionInfo {
@@ -833,6 +1085,7 @@ mod tests {
                 Arc::new(MockUpstream::fail("u2 fail", Duration::ZERO)),
             ],
             short_circuit: false,
+            response_selection: ResponseSelectionMode::default(),
             metrics: metrics.clone(),
         };
 
@@ -908,6 +1161,36 @@ upstreams:
     }
 
     #[test]
+    fn parse_forward_config_defaults_response_selection_to_balanced() {
+        let cfg = parse_forward_config(&make_plugin_config(
+            r#"
+upstreams:
+  - addr: "udp://1.1.1.1:53"
+"#,
+        ))
+        .expect("forward config should parse");
+
+        assert_eq!(cfg.response_selection, ResponseSelectionMode::Balanced);
+    }
+
+    #[test]
+    fn parse_forward_config_accepts_response_selection() {
+        let cfg = parse_forward_config(&make_plugin_config(
+            r#"
+response_selection: prefer_positive
+upstreams:
+  - addr: "udp://1.1.1.1:53"
+"#,
+        ))
+        .expect("forward config should parse");
+
+        assert_eq!(
+            cfg.response_selection,
+            ResponseSelectionMode::PreferPositive
+        );
+    }
+
+    #[test]
     fn quick_setup_supports_short_circuit_flag() {
         let (upstreams, short_circuit) =
             parse_quick_setup_param(Some("1.1.1.1 8.8.8.8 short_circuit=true".to_string()))
@@ -948,6 +1231,7 @@ upstreams:
             active_concurrent: 1,
             upstreams: vec![Arc::new(MockUpstream::ok())],
             short_circuit: false,
+            response_selection: ResponseSelectionMode::default(),
             metrics: test_metrics(),
         };
 
@@ -1006,6 +1290,7 @@ upstreams:
             active_concurrent: 1,
             upstreams: vec![Arc::new(MockUpstream::ok())],
             short_circuit: true,
+            response_selection: ResponseSelectionMode::default(),
             metrics: test_metrics(),
         };
 
@@ -1028,6 +1313,7 @@ upstreams:
                 )),
             ],
             short_circuit: false,
+            response_selection: ResponseSelectionMode::default(),
             metrics: test_metrics(),
         };
 
@@ -1053,6 +1339,7 @@ upstreams:
                 )),
             ],
             short_circuit: false,
+            response_selection: ResponseSelectionMode::default(),
             metrics: test_metrics(),
         };
 
@@ -1062,6 +1349,103 @@ upstreams:
         assert_eq!(
             context.response().expect("response must exist").rcode(),
             Rcode::Refused
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fastest_selection_returns_early_nxdomain() {
+        let forwarder = ConcurrentForwarder {
+            tag: "forward-test".to_string(),
+            active_concurrent: 2,
+            upstreams: vec![
+                Arc::new(MockUpstream::response(Rcode::NXDomain, Duration::ZERO)),
+                Arc::new(MockUpstream::ok_with_answer(Duration::from_millis(20))),
+            ],
+            short_circuit: false,
+            response_selection: ResponseSelectionMode::Fastest,
+            metrics: test_metrics(),
+        };
+
+        let mut context = make_context();
+        let step = forwarder.execute(&mut context).await.unwrap();
+        assert!(matches!(step, ExecStep::Next));
+        assert_eq!(
+            context.response().expect("response must exist").rcode(),
+            Rcode::NXDomain
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn balanced_selection_waits_briefly_for_positive_after_negative() {
+        let forwarder = ConcurrentForwarder {
+            tag: "forward-test".to_string(),
+            active_concurrent: 2,
+            upstreams: vec![
+                Arc::new(MockUpstream::response(Rcode::NXDomain, Duration::ZERO)),
+                Arc::new(MockUpstream::ok_with_answer(Duration::from_millis(20))),
+            ],
+            short_circuit: false,
+            response_selection: ResponseSelectionMode::Balanced,
+            metrics: test_metrics(),
+        };
+
+        let mut context = make_context();
+        let step = forwarder.execute(&mut context).await.unwrap();
+        let response = context.response().expect("response must exist");
+        assert!(matches!(step, ExecStep::Next));
+        assert_eq!(response.rcode(), Rcode::NoError);
+        assert_eq!(response.answers().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn prefer_positive_waits_for_late_positive() {
+        let forwarder = ConcurrentForwarder {
+            tag: "forward-test".to_string(),
+            active_concurrent: 2,
+            upstreams: vec![
+                Arc::new(MockUpstream::response(Rcode::NXDomain, Duration::ZERO)),
+                Arc::new(MockUpstream::ok_with_answer(Duration::from_millis(200))),
+            ],
+            short_circuit: false,
+            response_selection: ResponseSelectionMode::PreferPositive,
+            metrics: test_metrics(),
+        };
+
+        let mut context = make_context();
+        let step = forwarder.execute(&mut context).await.unwrap();
+        let response = context.response().expect("response must exist");
+        assert!(matches!(step, ExecStep::Next));
+        assert_eq!(response.rcode(), Rcode::NoError);
+        assert_eq!(response.answers().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn consensus_selection_returns_after_two_negative_votes() {
+        let forwarder = ConcurrentForwarder {
+            tag: "forward-test".to_string(),
+            active_concurrent: 3,
+            upstreams: vec![
+                Arc::new(MockUpstream::response(Rcode::NXDomain, Duration::ZERO)),
+                Arc::new(MockUpstream::response(
+                    Rcode::NXDomain,
+                    Duration::from_millis(20),
+                )),
+                Arc::new(MockUpstream::ok_with_answer(Duration::from_millis(200))),
+            ],
+            short_circuit: false,
+            response_selection: ResponseSelectionMode::Consensus,
+            metrics: Arc::new(ForwardMetrics::new(
+                "forward-test".to_string(),
+                vec!["u0".to_string(), "u1".to_string(), "u2".to_string()],
+            )),
+        };
+
+        let mut context = make_context();
+        let step = forwarder.execute(&mut context).await.unwrap();
+        assert!(matches!(step, ExecStep::Next));
+        assert_eq!(
+            context.response().expect("response must exist").rcode(),
+            Rcode::NXDomain
         );
     }
 }

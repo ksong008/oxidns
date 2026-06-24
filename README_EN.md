@@ -94,6 +94,7 @@ Typical use cases include:
 
 - Home gateways, side routers, OpenWrt, NAS, and homelab setups
 - Multi-upstream racing, fallback chains, and mixed protocol environments
+- Configurable concurrent upstream response selection to balance latency and negative-answer confidence
 - Fine-grained DNS policy routing based on domains, clients, and response results
 - DNS-result-driven `ipset` / `nftset` / MikroTik address list synchronization
 - Ad filtering, domain routing, local overrides, dual-stack preferences, and ECS control
