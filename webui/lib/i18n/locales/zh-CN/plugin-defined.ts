@@ -471,6 +471,10 @@ export const zhCNPluginDefined = {
           label: "正响应 TTL 上限",
           description: "定义正响应 TTL 上限。",
         },
+        min_positive_ttl: {
+          label: "正响应最小缓存 TTL",
+          description: "定义正响应进入缓存所需的最小 TTL。",
+        },
         ecs_in_key: {
           label: "ECS 参与缓存键",
           description: "控制 ECS scope 是否参与缓存键计算。",

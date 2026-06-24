@@ -527,6 +527,11 @@ export const enUSPluginDefined = {
           label: "Positive response TTL cap",
           description: "Defines the upper TTL limit for positive responses.",
         },
+        min_positive_ttl: {
+          label: "Minimum positive cache TTL",
+          description:
+            "Defines the minimum positive response TTL required for cache admission.",
+        },
         ecs_in_key: {
           label: "Include ECS in cache key",
           description:
